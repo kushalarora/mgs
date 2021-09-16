@@ -459,6 +459,7 @@ def train_score_network(buffers, phi_network, tokenizer, device, args, train_sco
             'dataset_size': len(buffers),
         }, score_network_filepath)
 
+
 def original_mgs_scoring_function(buffer, is_target_function, model, tokenizer, batch, score_model, max_length, device, args, prefix):
     decoded = defaultdict(list)
     bpes_curr, outputs, distance_curr = ggs_utils.decode_and_distance(
@@ -471,7 +472,12 @@ def original_mgs_scoring_function(buffer, is_target_function, model, tokenizer, 
         buffer.append(args.log_step, prefix, batch_id, batch, model,
                         outputs, distance_curr)
 
-    for i, idxs in enumerate(bpes_curr):
+    if not isinstance(batch, list):
+        outputs = outputs.tolist()
+
+    for i, idxs in enumerate(outputs):
+        if tokenizer.eos_token_id in decoding:
+            decoding = decoding[:decoding.index(tokenizer.eos_token_id) + 1]
         decoded[f'{prefix}_{i}'].append(tokenizer.decode(idxs))
     return distance_curr.mean().item(), bpes_curr, decoded
 
@@ -847,6 +853,13 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
                                                 columns=['avg. time'])
                     print(df)
 
+                if args.print_decodings:
+                    for i in range(batch.size(0)):
+                        print(decoded[f'original_{i}'])
+                        for j in range(args.num_directions):
+                            print(decoded[f'perturb_{j}_{i}'])
+                        print('\n')
+
             if args.log_step % args.valid_every == 0:
                 val_loss, val_metrics, decodings = train_utils.valid_iteration(
                     dataset_tensor_dict['valid'], model, score_model, train_utils.get_mle_loss, tokenizer, device,
@@ -962,5 +975,8 @@ def add_args(parser):
 
     parser.add_argument(
         "--train-score-patience", type=int, default=10,
+    )
+    parser.add_argument(
+        "--print-decodings", type=str, default=True,
     )
     return parser
