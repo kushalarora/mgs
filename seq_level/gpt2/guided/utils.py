@@ -219,6 +219,77 @@ def perturb(
     return models, log_rhos, noise_magnitudes
 
 
+def heuristic_perturb(
+        model, model_with_grad, num_samples, noise, noise_scale,
+        tokenizer, batch, score_model, device, args,
+        distance_curr_score,
+        zero_dist_only=False, mle_dist_only=False, include_mle_gradient=False, target_scoring_func=None
+):
+    models = []
+    log_rhos = []
+    noise_magnitudes = []  # diagnostic metric
+    # If we are including mle_gradients, we will sample num_directions + 1 samples.
+    # The extra sample will correspond to MLE gradient.
+    n = num_samples + 1 if include_mle_gradient else num_samples
+
+    Flag = True
+
+    for i in range(n):
+
+        while Flag:
+
+            model_ = deepcopy(model)
+            noise_mag = 0
+            eps_eps = 0
+            eps_nabla = 0
+            nabla_nabla = 0
+
+            for param, (name, param_with_grad) in zip(model_.parameters(), model_with_grad.named_parameters()):
+                g = -param_with_grad.grad.data
+                # Generate the noise
+                if include_mle_gradient and i == 0:
+                    noise = 0
+
+                if noise_scale == 'uniform':
+                    noise_ = noise * torch.randn_like(param.data) * (g.abs().sum() / g.numel())
+                else:
+                    noise_ = noise * torch.randn_like(param.data)
+
+                # Choose the mixture component (assume 0.5 mixture proportion)
+                if zero_dist_only:
+                    epsilon = noise_
+                elif (include_mle_gradient and i == 0) or mle_dist_only:
+                    epsilon = g + noise_
+                else:
+                    if i % 2 == 0:
+                        epsilon = g + noise_
+                    else:
+                        epsilon = noise_
+
+                param.data = param.data + epsilon
+
+                noise_mag += torch.sqrt((noise_ ** 2).sum()).item()
+
+                eps_eps += (epsilon.data.view(-1) * epsilon.data.view(-1)).sum()
+                eps_nabla += (g.view(-1) * epsilon.data.view(-1)).sum()
+                nabla_nabla += (g.view(-1) * g.view(-1)).sum()
+
+            distance_score, _, _ = target_scoring_func(
+                model_, tokenizer, batch, score_model, max_length, device, args, prefix='preturb_{i}'
+            )
+            if distance_score - distance_curr_score < 0:
+                models.append(model_)
+                noise_magnitudes.append(noise_mag)
+
+                q = 0.5 * torch.exp(-0.5 * eps_eps) + 0.5 * torch.exp(-0.5 * eps_eps + eps_nabla + - 0.5 * nabla_nabla)
+                log_rhos.append(torch.log(q))
+
+                break
+
+    log_rhos = torch.stack(log_rhos).cpu()
+    return models, log_rhos, noise_magnitudes
+
+
 def parameter_weighted_average(model, perturbed_models, log_weights):
     update_directions = {}
     for name, param in model.named_parameters():
