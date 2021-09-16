@@ -313,6 +313,8 @@ def main():
     parser.add_argument('--eval-decoder', choices=['greedy', 'temp-1.0'], default='greedy')
     parser.add_argument('--fixed-length', type=int, default=-1)
     parser.add_argument('--train-temperature', type=float, default=1.0)
+    parser.add_argument('--wandb', action='store_true')
+    parser.add_argument('--wandb-project-name', type=str, default='efficient_mgs')
 
     from seq_level.gpt2.guided.train import add_args
     parser = add_args(parser)

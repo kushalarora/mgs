@@ -13,6 +13,7 @@ import os
 from functools import partial
 from seq_level.gpt2.guided.metrics import GuidedMetrics
 from concurrent.futures import ThreadPoolExecutor
+from pprint import pformat
 
 from timeit import default_timer as timer
 import pandas as pd
@@ -23,6 +24,7 @@ import hashlib
 import pickle
 import logging
 import math
+import scipy.stats as stats
 
 def _hash_tensor(obj):
     return hashlib.sha1(bytes(obj.cpu().numpy())).hexdigest()
@@ -296,33 +298,64 @@ def get_train_score_network_loss(idx, type, model, batch, distances, phi_network
         distances.view(-1, 1),
         reduction='sum',
     )
-    return loss
+    return loss, outputs
 
 
 def validate_score_network(validation_iterator, phi_network, tokenizer, device, args):
     cuml_valid_loss = 0.
     num_docs = 0
+    cuml_perturbed_loss = 0.
+    cuml_non_perturbed_loss = 0.
+    num_docs_perturbed = 0
+    num_docs_non_perturbed = 0
+    
+    true_distances = []
+    predicted_distances = []
+    
+    true_distances_perturbed = []
+    true_distances_non_perturbed = []
+    predicted_distances_perturbed = []
+    predicted_distances_non_perturbed = []
+
     for step, (idx, type, batch, model, sequences, distances, rng_state) in enumerate(validation_iterator):
         if type == "pertubed":
             model, _ = perturb(model, batch, idx, tokenizer, args, rng_state=rng_state, device=device)
 
-        loss = get_train_score_network_loss(idx, type, model, batch, 
-                    distances, phi_network, tokenizer, device)
+        loss, pred_distances = get_train_score_network_loss(idx, type, model, batch, 
+                                                            distances, phi_network, tokenizer, device)
 
         if loss < 0:
             continue
 
+        true_distances += distances.tolist()
+        predicted_distances += pred_distances.squeeze(1).tolist()
+
         cuml_valid_loss += loss.item()
         num_docs += batch.size(0)
         
+        if type == "pertubed":
+            num_docs_perturbed += batch.size(0)
+            cuml_perturbed_loss += loss.item()
+            true_distances_perturbed += distances.tolist()
+            predicted_distances_perturbed += pred_distances.squeeze(1).tolist()
+        else:
+            num_docs_non_perturbed += batch.size(0)
+            cuml_non_perturbed_loss += loss.item()
+            true_distances_non_perturbed += distances.tolist()
+            predicted_distances_non_perturbed += pred_distances.squeeze(1).tolist()
+
         if step % 5 == 0 and step > 0:
             print('Validation:: Step: %d, Loss: %.2f' 
                     % (step, cuml_valid_loss / num_docs), end='\r')
 
     print()
-    return cuml_valid_loss/num_docs
+    return cuml_valid_loss/num_docs, {"all_corr": stats.kendalltau(true_distances, predicted_distances)[0],
+                                      "perturbed_corr": stats.kendalltau(true_distances_perturbed, predicted_distances_perturbed)[0],
+                                      "original_corr": stats.kendalltau(true_distances_non_perturbed, predicted_distances_non_perturbed)[0],
+                                      "perturbed_loss": cuml_perturbed_loss/num_docs_perturbed, 
+                                      "original_loss": cuml_non_perturbed_loss/num_docs_non_perturbed}
 
-def train_score_network(buffers, phi_network, tokenizer, device, args):
+def train_score_network(buffers, phi_network, tokenizer, device, args, train_score_network_iteration=0):
     """ This method takes in the scoring data (B) and learns a parameterized scoring model (S) to 
         mimic the original cost function (C) by minimizing the L2 loss.
         $C$ is defined as
@@ -354,8 +387,12 @@ def train_score_network(buffers, phi_network, tokenizer, device, args):
                 model, _ = perturb(model, batch, idx, tokenizer, args, rng_state=rng_state, device=device)
 
 
-            loss = get_train_score_network_loss(idx, type, model, batch, 
-                        distances, phi_network, tokenizer, device)
+            loss, _ = get_train_score_network_loss(idx, type, model, batch, 
+                            distances, phi_network, tokenizer, device)
+
+            if loss < 0:
+                continue 
+
             cuml_train_loss += loss.item()
             num_docs += batch.size(0)
 
@@ -374,13 +411,15 @@ def train_score_network(buffers, phi_network, tokenizer, device, args):
 
         print()
         train_loss = cuml_train_loss/num_docs
-        valid_loss = validate_score_network(valid_iterator, phi_network, tokenizer, device, args)
+        valid_loss, valid_info_dict = validate_score_network(valid_iterator, phi_network, tokenizer, device, args)
         if min_valid_loss < valid_loss:
             patience_counter += 1
         else:
             patience_counter = 0
             min_valid_loss = valid_loss
             best_phi_network = deepcopy(phi_network)
+            logging.info(pformat(valid_info_dict))
+
 
         if patience_counter > args.train_score_patience:
             logging.info(f"Stopping Early at epoch: {epoch} with best validation loss: {min_valid_loss}")
@@ -390,9 +429,23 @@ def train_score_network(buffers, phi_network, tokenizer, device, args):
         train_score_network_end = timer()
         train_score_network_time['cuml'] += train_score_network_end - train_score_network_start
         train_score_network_time['tick'] += 1
-        logging.info('Epoch: %d :: Train Loss: %.2f, Best Valid Loss: %.2f, Valid Loss: %.2f, Epochs Since Last Best: %d ' % (epoch, train_loss, min_valid_loss, valid_loss, patience_counter))
+        logging.info('Epoch: %d :: Train Loss: %.2f, ' % (epoch, train_loss) + 
+                        'Best Valid Loss: %.2f, Valid Loss: %.2f, Epochs Since Last Best: %d ' 
+                            % (min_valid_loss, valid_loss, patience_counter))
         logging.info(f"Train score network epoch {epoch} done!")
         logging.info(f"Avg Epoch Time: {train_score_network_time['cuml']/train_score_network_time['tick']}")
+
+        prefix =  f"train_score_network_{train_score_network_iteration}/"
+        valid_metrics = {
+           prefix + "train_loss": train_loss,
+           prefix + "valid_loss": valid_loss,
+           prefix + "min_valid_loss": min_valid_loss,
+        }
+
+        for key, val in valid_info_dict.items():
+            valid_metrics[prefix + key] = val
+        utils.log_tensorboard(valid_metrics, epoch)
+
     print('Done training the score network.\n')
     print('=' * 150)
     phi_network = best_phi_network
@@ -609,6 +662,7 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
     global MODEL_ID
     MODEL_ID = ggs_utils.get_model_id(model)
 
+    score_network_training_iter = 0
     model.train()
     train_sampler = RandomSampler(dataset_tensor_dict['train'])
     train_dataloader = DataLoader(
@@ -692,7 +746,8 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
                                 phi_network, 
                                 tokenizer, 
                                 device,
-                                args)
+                                args,
+                                score_network_training_iter)
 
         scoring_function = partial(original_mgs_scoring_function, buffer, False)
         target_scoring_func = partial(dagger_mgs_scoring_function, phi_network)
@@ -720,11 +775,13 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
 
 
                 if (step + 1) % args.retrain_score_network_every == 0:
+                    score_network_training_iter += 1
                     train_score_network(buffer, 
                                         phi_network, 
                                         tokenizer,
                                         device,
-                                        args)
+                                        args, 
+                                        score_network_training_iter)
 
             train_step_time_start = timer()
 

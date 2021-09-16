@@ -38,6 +38,15 @@ fi
 
 cmd="python -u seq_level/gpt2/train.py --dataset-path=$SLURM_TMPDIR/wikitext103_raw_gpt2bpe.pkl"
 
+if [  -n "${wandb}" ] && [ "${wandb}" == "true" ];
+then
+	cmd+=" --wandb"
+
+	if [ -n "${wandb_project}" ]; 
+	then
+		cmd+=" --wand-project-name ${wandb_project}"
+	fi
+fi
 if [ ${LOSS} = mle ];
 then
 	cmd+=" --loss mle --valid-every 5000 --print-every 100 "
@@ -120,6 +129,7 @@ cmd+=" --save-base-dir ${TMP_RUN_DIR}"
 pkill -f "port ${TPORT}"
 sleep 5
 echo "Running Command:"
+
 echo "	$cmd"
 
 if [ -z "${debug}" ]; then

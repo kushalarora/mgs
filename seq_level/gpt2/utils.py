@@ -15,7 +15,7 @@ from transformers import (
     CONFIG_NAME,
 )
 from torch.utils.data import Dataset
-
+import wandb
 
 # -- data utils
 class LineDataset(Dataset):
@@ -244,8 +244,11 @@ def log_tensorboard(values_dict, step):
     for k, v in values_dict.items():
         if isinstance(v, int) or isinstance(v, float):
             logger.log_value(k, v, step)
-
-
+        try:
+            wandb.log(values_dict)
+        except:
+            # Most probably wandb is not inited.
+            pass
 def setup_tensorboard(args):
     log_directory = args.save_base_dir
     args.log_step = 0
@@ -255,6 +258,10 @@ def setup_tensorboard(args):
         logger.configure(log_directory)
     except ValueError:
         pass
+    
+    if args.wandb:
+        wandb.init(project=args.wandb_project_name)
+
 
 
 def setup(args):
