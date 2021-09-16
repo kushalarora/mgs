@@ -245,7 +245,7 @@ def log_tensorboard(values_dict, step):
         if isinstance(v, int) or isinstance(v, float):
             logger.log_value(k, v, step)
         try:
-            wandb.log(values_dict)
+            wandb.log(values_dict, step=step)
         except:
             # Most probably wandb is not inited.
             pass
