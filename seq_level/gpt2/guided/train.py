@@ -209,7 +209,7 @@ aggregation_step_time = {
 }
 
 
-def aggregate_score_data(step, batch_id, batch, buffer, model, score_model, tokenizer, args, device):
+def accumulate_score_function_training_data(step, batch_id, batch, buffer, model, score_model, tokenizer, args, device):
     """ This method does a forward pass over the original model and 
         the perturbed model to compute the yo_i, the decoded output corresponding
         to the input x using the original model, and yp_i, the decoding output corresponding
@@ -368,7 +368,7 @@ def validate_score_network(validation_iterator, phi_network, tokenizer, device, 
                                         "original_loss": cuml_non_perturbed_loss / num_docs_non_perturbed}
 
 
-def train_score_network(buffers, phi_network, tokenizer, device, args, train_score_network_iteration=0):
+def train_score_network(buffers, phi_network, tokenizer, device, args, train_score_network_iteration=0, epochs=100):
     """ This method takes in the scoring data (B) and learns a parameterized scoring model (S) to 
         mimic the original cost function (C) by minimizing the L2 loss.
         $C$ is defined as
@@ -381,7 +381,7 @@ def train_score_network(buffers, phi_network, tokenizer, device, args, train_sco
     min_valid_loss = math.inf
     best_phi_network = None
     patience_counter = 0
-    print('=' * 150)
+    print('=' * 100)
     print('Start training the score network.\n')
     phi_network.train()
     phi_network = phi_network.to(device=device)
@@ -389,7 +389,7 @@ def train_score_network(buffers, phi_network, tokenizer, device, args, train_sco
     phi_optimizer = optim.Adam(phi_network.parameters(), lr=0.001)
     scheduler = optim.lr_scheduler.StepLR(phi_optimizer, step_size=20, gamma=0.5, verbose=True)
 
-    for epoch in range(args.score_network_epochs):
+    for epoch in range(epochs):
         train_iterator, valid_iterator = buffers.get_iterators()
         cuml_train_loss = 0.
         num_docs = 0
@@ -458,7 +458,7 @@ def train_score_network(buffers, phi_network, tokenizer, device, args, train_sco
         utils.log_tensorboard(valid_metrics, epoch)
 
     print('Done training the score network.\n')
-    print('=' * 150)
+    print('=' * 100)
     phi_network = best_phi_network
 
     if args.save_score_network:
@@ -656,7 +656,7 @@ def MGS(batch, model, score_model, tokenizer, args, device, metrics, optimizer,
     return decoded
 
 
-def shall_aggregate_data(step, total_num_batches, args):
+def shall_accumulate_score_function_training_data(step, total_num_batches, args):
     # For first 25% of batches, aggregate data every batch.
     if step < total_num_batches // 4:
         return True
@@ -708,14 +708,16 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
     stats_cache = defaultdict(list)
     average_times = {}
     score_model = deepcopy(model)
+
     scoring_function = partial(original_mgs_scoring_function, None, False)
+    target_scoring_func = None
 
     config = GPT2Config()
     phi_network = MLP(input_size=config.hidden_size).to(device=device)
 
     if args.efficient:
         # Initialize buffer and pretrain score network.
-        print('=' * 150)
+        print('=' * 100)
 
         # If using saved aggregated data, use it, else, initialize an empty buffer.
         if args.use_saved_aggregated_data:
@@ -730,6 +732,8 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
                                     "persistence_datastore"),
                                 on_device=args.on_device)
 
+
+        initial_training_epochs = args.score_network_epochs
         # If using saved score network, use it, else accumulate training data, 
         # and train network on the accumulated data.
         if args.use_saved_score_network:
@@ -737,6 +741,7 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
             phi_network.load_state_dict(score_model_checkpoint['model_save_dict'])
             epochs_trained = score_model_checkpoint['epochs']
             logging.info(f"Loading Phi Network trained for {epochs_trained} epochs from {args.score_network_file}.")
+            initial_training_epochs = args.retrain_score_network_epochs
         else:
             if not args.use_saved_aggregated_data:
                 logging.info("Started Initial Data Aggregation.")
@@ -745,15 +750,8 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
                         break
 
                     aggregate_step_start = timer()
-                    aggregate_score_data(step,
-                                         batch_id,
-                                         batch,
-                                         buffer,
-                                         model,
-                                         score_model,
-                                         tokenizer,
-                                         args,
-                                         device)
+                    accumulate_score_function_training_data(step, batch_id, batch,
+                                buffer, model, score_model, tokenizer, args, device)
 
                     aggregate_step_end = timer()
                     aggregation_step_time['cuml'] += aggregate_step_end - aggregate_step_start
@@ -770,14 +768,14 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
                     with open(buffer_filepath, 'wb') as buffer_file:
                         pickle.dump(buffer, buffer_file)
 
-            logging.info("Training Scoring Network on Aggregated Data.")
-
-            train_score_network(buffer,
-                                phi_network,
-                                tokenizer,
-                                device,
-                                args,
-                                score_network_training_iter)
+        logging.info("Training Scoring Network on Aggregated Data.")
+        train_score_network(buffer,
+                            phi_network,
+                            tokenizer,
+                            device,
+                            args,
+                            score_network_training_iter,
+                            epochs=initial_training_epochs)
 
         scoring_function = partial(original_mgs_scoring_function, buffer, False)
         target_scoring_func = partial(dagger_mgs_scoring_function, phi_network)
@@ -785,23 +783,16 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
         if args.use_learned_scoring_function:
             scoring_function = partial(dagger_mgs_scoring_function, phi_network)
             target_scoring_func = partial(original_mgs_scoring_function, buffer, False)
-        print('=' * 150)
+        print('=' * 100)
 
     for epoch_number in range(args.num_train_epochs):
         metrics = GuidedMetrics()
 
         for step, (batch_id, batch) in enumerate(train_dataloader):
             if args.efficient:
-                if shall_aggregate_data(step, total_num_batches, args):
-                    aggregate_score_data(step,
-                                         batch_id,
-                                         batch,
-                                         buffer,
-                                         model,
-                                         score_model,
-                                         tokenizer,
-                                         args,
-                                         device)
+                if shall_accumulate_score_function_training_data(step, total_num_batches, args):
+                    accumulate_score_function_training_data(step, batch_id, batch,
+                                buffer, model, score_model, tokenizer, args, device) 
 
                 if (step + 1) % args.retrain_score_network_every == 0:
                     score_network_training_iter += 1
@@ -810,7 +801,8 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
                                         tokenizer,
                                         device,
                                         args,
-                                        score_network_training_iter)
+                                        score_network_training_iter,
+                                        epochs=args.retrain_score_network_epochs,)
 
             train_step_time_start = timer()
 
@@ -880,12 +872,13 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
                                                 columns=['avg. time'])
                     print(df)
 
-                if args.print_decodings:
-                    for i in range(batch.size(0)):
-                        print(decoded[f'original_{i}'])
-                        for j in range(args.num_directions):
-                            print(decoded[f'perturb_{j}_{i}'])
-                        print('\n')
+                if not args.use_learned_scoring_function and args.print_decodings:
+                    i = random.choice(range(batch.size(0)))
+                    print(f"Step: {step}")
+                    print(f"theta(x_{i}): {decoded['original_%d' % i][0]}")
+                    for j in range(args.ggs_num_samples):
+                        print(f"theta+Delta_{j}(x_{i}): {decoded['preturb_%d_%d' % (j, i)][0]}")
+                    print('\n')
 
             if args.log_step % args.valid_every == 0:
                 val_loss, val_metrics, decodings = train_utils.valid_iteration(
@@ -894,6 +887,18 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
                     num_decodings=250,
                     args=args
                 )
+
+                if args.print_decodings:
+                    logging.info(f"Validation Decodings at Step: {step}")
+                    prefixes = decodings['text_prefix']
+                    sentences = decodings['text_decoding_including_prefix']
+
+                    to_print_idxs = random.sample(range(len(sentences)), 10)
+                    for i in to_print_idxs:
+                        print(f"{'Prefix':<10}: {prefixes[i]}")
+                        print(f"{'Sequence':<10}: {sentences[i]}")                    
+                        print('\n')
+
                 if args.save_all == 1:
                     save_dir = os.path.join(args.save_base_dir, str(args.log_step))
                     os.makedirs(save_dir)
@@ -975,6 +980,9 @@ def add_args(parser):
 
     parser.add_argument(
         "--score-network-epochs", type=int, default=100,
+    )
+    parser.add_argument(
+        "--retrain-score-network-epochs", type=int, default=30,
     )
     parser.add_argument(
         "--retrain-score-network-every", type=int, default=500

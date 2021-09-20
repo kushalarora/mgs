@@ -12,6 +12,7 @@
 
 # 2. Load your environment
 # conda activate torch181
+
 module load python/3.7
 if [ ! -d ${HOME}/envs/mgs ]; then
 	python -m venv ${HOME}/envs/mgs;
@@ -25,16 +26,17 @@ source ${HOME}/envs/mgs/bin/activate
 rsync -avz ./datasets/wikitext103_raw_gpt2bpe.pkl $SLURM_TMPDIR
 
 MODEL_NAME=${model_name:="gpt2"}
-LOSS=${loss:="mle"}
+loss=${loss:="mle"}
 TPORT=${port:=8001}
-EXP_NAME=${exp_name:="wikipedia103/"}"_${MODEL_NAME}_${LOSS}"
-OUTPUT_DIR_SUFFIX="${MODEL_NAME}_${LOSS}_${SLURM_JOB_ID}"
+EXP_NAME=${exp_name:="wikipedia103/"}"_${MODEL_NAME}_${loss}"
+OUTPUT_DIR_SUFFIX="${MODEL_NAME}_${loss}_${SLURM_JOB_ID}"
 SAVE_BASE_DIR=${save_dir:-"./wikipedia103"}
 
 if [ -d ${SAVE_BASE_DIR} ]; then
 	mkdir -p ${SAVE_BASE_DIR}
 fi 
 
+. ./run_config.sh
 
 cmd="python -u seq_level/gpt2/train.py --dataset-path=$SLURM_TMPDIR/wikitext103_raw_gpt2bpe.pkl"
 
@@ -42,12 +44,12 @@ if [  -n "${wandb}" ] && [ "${wandb}" == "true" ];
 then
 	cmd+=" --wandb"
 
-	if [ -n "${wandb_project}" ]; 
+	if [ -n "${wandb_run}" ]; 
 	then
-		cmd+=" --wand-project-name ${wandb_project}"
+		cmd+=" --wandb-run-name ${wandb_run}"
 	fi
 fi
-if [ ${LOSS} = mle ];
+if [ ${loss} = mle ];
 then
 	cmd+=" --loss mle --valid-every 5000 --print-every 100 "
 else
@@ -56,24 +58,24 @@ else
 	MODEL_LOAD_DIR=${model_dir:="./mle/default/"}
 	cmd+=" --ggs-metric ${GGS_METRIC} --model-load-dir=${MODEL_LOAD_DIR} "
 
-	if [ ${LOSS} = pg ];
+	if [ ${loss} = pg ];
 	then
 		PG_NORMALIZE_DISTANCE=${pg_dist:=1}
 		PG_BASELINE=${baseline:="avg"}
 		cmd+="  --loss pg --pg-normalize-distance=${PG_NORMALIZE_DISTANCE} --pg-mle-mix=${MLE_MIX} --pg-baseline ${PG_BASELINE} "
 
-	elif [ ${LOSS} = mrt ];
+	elif [ ${loss} = mrt ];
 	then
 		MRT_NORMALIZE_DISTANCE=${mrt_dist:=1}
 		MRT_BASELINE=${baseline:="avg"}
 		cmd+=" --loss mrt --mrt-normalize-distance=${MRT_NORMALIZE_DISTANCE} --mrt-mle-mix=${MLE_MIX} "
 		
-	elif [ ${LOSS} = ggs ];
+	elif [ ${loss} = ggs ];
 	then
 		MGS_BETA=${mgs_beta:=1.0}
 		cmd+=" --loss ggs --ggs-beta=${MGS_BETA}"
 
-        if [ -n "${include_mle_grad}" ];
+        if [ -n "${include_mle_grad}" ] && [ "${include_mle_grad}" == "true" ];
         then
             cmd+=" --include-mle-gradient "
         fi
@@ -115,6 +117,11 @@ else
 						if [ -n "${save_score_network}" ] && [ "${save_score_network}" == "true" ];
 						then
 							cmd+=" --save-score-network "
+						fi
+
+						if [ -n "${use_learned_score_function}" ] && [ "${use_learned_score_function}" == "true" ];
+						then
+							cmd+=" --use-learned-scoring-function "
 						fi
         fi
 	else
