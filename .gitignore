@@ -117,3 +117,4 @@ mle/*
 gpt2/*
 *.out
 wandb/
+results/

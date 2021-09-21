@@ -30,7 +30,7 @@ loss=${loss:="mle"}
 TPORT=${port:=8001}
 EXP_NAME=${exp_name:="wikipedia103/"}"_${MODEL_NAME}_${loss}"
 OUTPUT_DIR_SUFFIX="${MODEL_NAME}_${loss}_${SLURM_JOB_ID}"
-SAVE_BASE_DIR=${save_dir:-"./wikipedia103"}
+SAVE_BASE_DIR=${save_dir:-"./results/wikipedia103"}
 
 if [ -d ${SAVE_BASE_DIR} ]; then
 	mkdir -p ${SAVE_BASE_DIR}
