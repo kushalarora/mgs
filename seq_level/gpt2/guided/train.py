@@ -43,7 +43,12 @@ class RingBuffer:
                  on_device=False):
         self.max_size = max_size
         self.persistence = persistence
-        self.queue = []
+        
+        self.train_queue = []
+        self.valid_queue = []
+
+        self.valid_idxs = set([])
+        self.train_idxs = set([])
 
         if persistence == 'none':
             self.db = {}
@@ -58,18 +63,32 @@ class RingBuffer:
         # self.executor = ThreadPoolExecutor(max_workers=6)
 
     def __len__(self):
-        return len(self.queue)
+        return len(self.train_queue)
 
-    def append(self, idx, type, batch_id, batch, model,
-               sequences, distances, rng_state=None):
+    def append(self, idx, type, batch_id, batch, model, sequences, 
+                distances, rng_state=None, apply_to_mle_grad=None):
+
+        if idx not in self.valid_idxs and idx not in self.train_idxs:
+            if random.random() > 0.9:
+                self.valid_idxs.add(idx)
+            else:
+                self.train_idxs.add(idx)
+        
+        # Randomly w/ prob 0.9, add to train queue, and
+        # with 0.1 add to valid queue. 
+        queue = self.train_queue
+        queue_max_size = self.max_size
+        if idx in self.valid_idxs:
+            queue = self.valid_queue
+            queue_max_size = int(0.2 * self.max_size)
 
         print(f"Id: {idx}::" +
-              f" Queue Size: {len(self.queue)}," +
+              f" Queue Sizes: {len(self.train_queue)}/{len(self.valid_queue)}," +
               f" DB size: {len(self.db)}", end='\r')
 
-        if len(self.queue) >= self.max_size:
+        if len(queue) >= queue_max_size:
             (_, _, old_batch_key, old_model_key,
-             old_sequences_key, old_distances, _) = self.queue.pop(0)
+             _, _, _, _) = queue.pop(0)
             logging.debug("Removing item from Queue: " +
                           f"Batch: {old_batch_key} " +
                           f"Model: {old_model_key}.")
@@ -83,11 +102,6 @@ class RingBuffer:
             if self.db_counter[old_batch_key] == 0:
                 del self.db_counter[old_batch_key]
                 del self.db[old_batch_key]
-
-            # self.db_counter[old_sequences_key] -= 1
-            # if self.db_counter[old_sequences_key] == 0:
-            #     del self.db_counter[old_sequences_key]
-            #     del self.db[old_sequences_key]
 
         # batch_key = f"batch_{_hash_tensor(batch)}"
         batch_key = f"batch_{batch_id}"
@@ -107,32 +121,21 @@ class RingBuffer:
             self.db_counter[model_key] = 0
         self.db_counter[model_key] += 1
 
-        # sequences_key_suffix = _hash_tensor(sequences)
-        # sequences_key = f"sequence_{batch_key}_{model_key}_{sequences_key_suffix}"
-        # if sequences_key not in self.db:
-        #     self.db[sequences_key] = sequences.cpu()
-        #     self.db_counter[sequences_key] = 0
-        # self.db_counter[sequences_key] += 1
         sequences_key = None
 
-        self.queue.append((idx, type, batch_key,
-                           model_key, sequences_key,
-                           distances.cpu(), rng_state))
+        if not self.on_device:
+            distances = distances.cpu()
 
-    def get_iterators(self, train_prop=0.8, shuffle=True):
-        iterable = self.queue
+        queue.append((idx, type, batch_key,
+                        model_key, sequences_key,
+                        , rng_state, apply_to_mle_grad))
 
-        if shuffle:
-            iterable = random.sample(self.queue, len(self.queue))
-
-        train_size = int(len(iterable) * train_prop)
-        train, valid = iterable[:train_size], iterable[train_size:]
-
+    def get_iterators(self, shuffle=True):
         def _batch_generator(iterable, shuffle=True):
             if shuffle:
                 iterable = random.sample(iterable, len(iterable))
 
-            for idx, type, batch_key, model_key, sequences_key, distances, rng_state in iterable:
+            for idx, type, batch_key, model_key, sequences_key, distances, rng_state, apply_to_mle_grad in iterable:
                 batch = self.db[batch_key].type(torch.long)
                 sequences = None
                 model = self.db[model_key]
@@ -142,9 +145,9 @@ class RingBuffer:
                         f"Distance: {distances.size(0)}, Batch: ({batch.size()}), {batch_key} Sequence: {sequences_key}" + \
                         f"Model: {model_key}.")
                     continue
-                yield (idx, type, batch, model, sequences, distances, rng_state)
+                yield (idx, type, batch, model, sequences, distances, rng_state, apply_to_mle_grad)
 
-        return _batch_generator(train, shuffle), _batch_generator(valid, shuffle)
+        return _batch_generator(self.train_queue, shuffle), _batch_generator(self.valid_queue, False)
 
 
 total_scoring_time = {
@@ -232,51 +235,57 @@ def accumulate_score_function_training_data(step, batch_id, batch, buffer, model
     _, cur_decodings, cur_distances = ggs_utils.decode_and_distance(
         model, tokenizer, batch, score_model, max_length, device, args, average_distance=False
     )
-    buffer.append(step, 'current', batch_id, batch, model, cur_decodings, cur_distances)
+
+    idx = f'accum_{step}'
+    buffer.append(idx, 'current', batch_id, batch, model, cur_decodings, cur_distances)
 
     # Get the current MLE gradients
     model.train()
-    per_model, rng_state = perturb(model, batch, step, tokenizer, args, device=device)
+    per_model, rng_state, apply_to_mle_grad = perturb(model, batch, step, tokenizer, args, device=device)
 
     _, per_decodings, per_distances = ggs_utils.decode_and_distance(
         per_model, tokenizer, batch, score_model, max_length, device, args, average_distance=False
     )
-    buffer.append(step, 'pertubed', batch_id, batch, model, per_decodings, per_distances, rng_state=rng_state)
+    buffer.append(idx, 'pertubed', batch_id, batch, model, 
+                    per_decodings, per_distances, 
+                    rng_state=rng_state, apply_to_mle_grad=apply_to_mle_grad)
     return buffer
 
 
-def perturb(model, batch, step, tokenizer, args, rng_state=None, device=None):
+def perturb(model, batch, step, tokenizer, args, device=None,
+                rng_state=None,  apply_to_mle_grad=None):
     per_model = deepcopy(model)
     inp, target = batch[:, :-1], batch[:, 1:]
 
-    if step % 2 == 0:
-        model_with_grad, _ = ggs_utils.mle_grad(
-            per_model, inp, target, tokenizer.pad_token_id, args.max_grad_norm
-        )
-        model_with_grad_param_dict = dict(model_with_grad.named_parameters())
+    apply_to_mle_grad = apply_to_mle_grad or (random.random() < 0.5)
+
+    model_with_grad, _ = ggs_utils.mle_grad(
+        per_model, inp, target, tokenizer.pad_token_id, args.max_grad_norm
+    )
+    model_with_grad_param_dict = dict(model_with_grad.named_parameters())
 
     with ggs_utils.RNG(rng_state, device) as (rng, rng_state):
         for name, param in per_model.named_parameters():
             perturbation = torch.randn(param.size(), generator=rng, device=param.device)
 
+            param_with_grad = model_with_grad_param_dict[name]
+            gradient = -param_with_grad.grad.data
+
             if args.noise_scale == 'uniform':
-                noise_ = args.ggs_noise * perturbation * args.learning_rate * (
-                            param.data.abs().sum() / param.data.numel())
+                noise_ = args.ggs_noise * perturbation * (
+                            gradient.data.abs().sum() / gradient.data.numel())
             else:
                 noise_ = args.ggs_noise * perturbation
 
             # TODO: Should we consider random noise addition for data aggregation and
             # score training. 
-            if step % 2 == 0:
-                param_with_grad = model_with_grad_param_dict[name]
-                gradient = -param_with_grad.grad.data
-
+            if apply_to_mle_grad:
                 epsilon = noise_ + gradient
             else:
                 epsilon = noise_
 
             param.data = param.data + epsilon
-    return per_model, rng_state
+    return per_model, rng_state, apply_to_mle_grad
 
 
 def get_train_score_network_loss(idx, type, model, batch, distances, phi_network, tokenizer, device):
@@ -310,13 +319,21 @@ def get_train_score_network_loss(idx, type, model, batch, distances, phi_network
     return loss, outputs
 
 
-def validate_score_network(validation_iterator, phi_network, tokenizer, device, args):
+def validate_score_network(valid_iter, phi_network, tokenizer, device, args):
     cuml_valid_loss = 0.
     num_docs = 0
     cuml_perturbed_loss = 0.
     cuml_non_perturbed_loss = 0.
+
+    cuml_score_func_fit_all = 0.
+    cuml_score_func_fit_perturbed = 0.
+    cuml_score_func_fit_original = 0.
+
     num_docs_perturbed = 0
     num_docs_non_perturbed = 0
+
+    # idx => {'original': (true_dist, pred_dist), 'perturbed': [(true_dist, pred_dist)]}
+    score_func_diff_fit_dict = {}
 
     true_distances = []
     predicted_distances = []
@@ -326,9 +343,13 @@ def validate_score_network(validation_iterator, phi_network, tokenizer, device, 
     predicted_distances_perturbed = []
     predicted_distances_non_perturbed = []
 
-    for step, (idx, type, batch, model, sequences, distances, rng_state) in enumerate(validation_iterator):
+    for step, (idx, type, batch, model, _, distances, rng_state,
+                        apply_to_mle_grad) in enumerate(valid_iter):
+
         if type == "pertubed":
-            model, _ = perturb(model, batch, idx, tokenizer, args, rng_state=rng_state, device=device)
+            model, _, _ = perturb(model, batch, idx, tokenizer, 
+                           args, device=device, rng_state=rng_state,
+                           apply_to_mle_grad=apply_to_mle_grad)
 
         loss, pred_distances = get_train_score_network_loss(idx, type, model, batch,
                                                             distances, phi_network, tokenizer, device)
@@ -337,27 +358,56 @@ def validate_score_network(validation_iterator, phi_network, tokenizer, device, 
             continue
 
         true_distances += distances.tolist()
-        predicted_distances += pred_distances.squeeze(1).tolist()
-
+        pred_distances = pred_distances.squeeze(1).detach().cpu()
+        predicted_distances += pred_distances.tolist()
+        score_func_fit = torch.sum(torch.abs(distances - pred_distances)/pred_distances).item()
+        
         cuml_valid_loss += loss.item()
+        cuml_score_func_fit_all += score_func_fit
+
         num_docs += batch.size(0)
 
+        if idx not in score_func_diff_fit_dict:
+            score_func_diff_fit_dict[idx] = {'original': None, 
+                                             'perturbed': [],}
+        
         if type == "pertubed":
             num_docs_perturbed += batch.size(0)
             cuml_perturbed_loss += loss.item()
             true_distances_perturbed += distances.tolist()
-            predicted_distances_perturbed += pred_distances.squeeze(1).tolist()
+            predicted_distances_perturbed += pred_distances.tolist()
+            cuml_score_func_fit_perturbed = score_func_fit
+            score_func_diff_fit_dict[idx]['perturbed'].append((distances.mean(), pred_distances.mean()))
         else:
             num_docs_non_perturbed += batch.size(0)
             cuml_non_perturbed_loss += loss.item()
             true_distances_non_perturbed += distances.tolist()
-            predicted_distances_non_perturbed += pred_distances.squeeze(1).tolist()
+            predicted_distances_non_perturbed += pred_distances.tolist()
+            cuml_score_func_fit_original += score_func_fit
+            score_func_diff_fit_dict[idx]['original'] = (distances.mean(), pred_distances.mean())
 
         if step % 5 == 0 and step > 0:
             print('Validation:: Step: %d, Loss: %.2f'
                   % (step, cuml_valid_loss / num_docs), end='\r')
-
     print()
+
+    cuml_score_func_diff_fit = 0.
+    func_diff_fit_count = 0
+    for idx, diff_dict in score_func_diff_fit_dict.items():
+        original_true_score, original_pred_score = diff_dict['original']
+        pertured_scores = diff_dict['perturbed']
+
+        for perturb_true_score, perturb_pred_score in pertured_scores:
+            if (perturb_true_score - original_true_score) == 0:
+                logging.debug(f"For idx: {idx}," + 
+                                " perturbed score: {perturb_true_score}" + 
+                                " original score: {original_true_score}" + 
+                                " are equal.")
+                continue
+
+            cuml_score_func_diff_fit += torch.abs((perturb_pred_score - original_pred_score)/(perturb_true_score - original_true_score)).item()
+            func_diff_fit_count += 1
+
     return cuml_valid_loss / num_docs, {"all_corr": stats.kendalltau(true_distances, predicted_distances)[0],
                                         "perturbed_corr":
                                             stats.kendalltau(true_distances_perturbed, predicted_distances_perturbed)[
@@ -365,7 +415,11 @@ def validate_score_network(validation_iterator, phi_network, tokenizer, device, 
                                         "original_corr": stats.kendalltau(true_distances_non_perturbed,
                                                                           predicted_distances_non_perturbed)[0],
                                         "perturbed_loss": cuml_perturbed_loss / num_docs_perturbed,
-                                        "original_loss": cuml_non_perturbed_loss / num_docs_non_perturbed}
+                                        "original_loss": cuml_non_perturbed_loss / num_docs_non_perturbed, 
+                                        "score_func_fit_all": cuml_score_func_fit_all / num_docs,
+                                        "score_func_fit_perturbed": cuml_score_func_fit_perturbed / num_docs_perturbed,
+                                        "score_func_fit_original": cuml_score_func_fit_original / num_docs_non_perturbed,
+                                        "score_func_diff_fit": cuml_score_func_diff_fit / func_diff_fit_count,}
 
 
 def train_score_network(buffers, phi_network, tokenizer, device, args, train_score_network_iteration=0, epochs=100):
@@ -394,10 +448,13 @@ def train_score_network(buffers, phi_network, tokenizer, device, args, train_sco
         cuml_train_loss = 0.
         num_docs = 0
         train_score_network_start = timer()
-        for step, (idx, type, batch, model, sequences, distances, rng_state) in enumerate(train_iterator):
+        for step, (idx, type, batch, model, _, distances, rng_state,
+             apply_to_mle_grad) in enumerate(train_iterator):
+
             phi_optimizer.zero_grad()
             if type == "pertubed":
-                model, _ = perturb(model, batch, idx, tokenizer, args, rng_state=rng_state, device=device)
+                model, _, _ = perturb(model, batch, idx, tokenizer, args, 
+                                device=device, rng_state=rng_state, apply_to_mle_grad=apply_to_mle_grad)
 
             loss, _ = get_train_score_network_loss(idx, type, model, batch,
                                                    distances, phi_network, tokenizer, device)
@@ -481,7 +538,8 @@ def original_mgs_scoring_function(buffer, is_target_function, model, tokenizer, 
     # Keeping this commented for the time being as need to figure out
     # how to integrate rng_state caching.
     if False and args.efficient and is_target:
-        buffer.append(args.log_step, prefix, batch_id, batch, model,
+        idx = f'mgs_{args.log_step}'
+        buffer.append(idx, prefix, batch_id, batch, model,
                       outputs, distance_curr)
 
     if not isinstance(batch, list):
@@ -1008,7 +1066,7 @@ def add_args(parser):
     parser.add_argument('--use-learned-scoring-function', action='store_true')
 
     parser.add_argument(
-        "--train-score-patience", type=int, default=10,
+        "--train-score-patience", type=int, default=20,
     )
     parser.add_argument(
         "--print-decodings", type=str, default=True,

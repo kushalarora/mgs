@@ -85,8 +85,8 @@ else
             cmd+=" --efficient  --log-scoring-function  --on-device"
 						if [ -n "${debug}" ] && [ "${debug}" == "true" ];
 						then
-							# cmd+=' --score-network-epochs 100 --aggregated-data-size 10 --retrain-score-network-every 100 --max-buffer-size 80 --on-device'
-							cmd+=' --score-network-epochs 50 --aggregated-data-size 300 --retrain-score-network-every 200 --max-buffer-size 600 '
+							cmd+=' --score-network-epochs 100 --aggregated-data-size 40 --retrain-score-network-every 100 --max-buffer-size 80 --on-device'
+							# cmd+=' --score-network-epochs 50 --aggregated-data-size 300 --retrain-score-network-every 200 --max-buffer-size 600 '
 						fi
 
 						if [ -n "${use_agg_data}" ] && [ "${use_agg_data}" == "true" ];
