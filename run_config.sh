@@ -44,6 +44,12 @@ then
       wandb_run+="-learned"
       use_learned_score_function="true"
     fi
+
+    if [[ "${run_type}" =~ .*_train_score.* ]]
+    then
+      wandb_run+="-only-train-score-network"
+      only_train_score_network="true"
+    fi
   fi
 fi
 

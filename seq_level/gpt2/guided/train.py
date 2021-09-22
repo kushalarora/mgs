@@ -488,7 +488,8 @@ def train_score_network(buffers, score_network, tokenizer, device,
             best_score_network = deepcopy(score_network)
             logging.info(pformat(valid_info_dict))
 
-        if patience_counter > args.train_score_patience:
+        if not args.only_train_score_network and \
+             patience_counter > args.train_score_patience:
             logging.info(f"Stopping Early at epoch: {epoch} with best validation loss: {min_valid_loss}")
             break
 
@@ -815,6 +816,9 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
             scoring_function = partial(dagger_mgs_scoring_function, score_network)
             target_scoring_func = partial(original_mgs_scoring_function, buffer, False)
         print('=' * 100)
+    
+    if args.only_train_score_network:
+        return
 
     for epoch_number in range(args.num_train_epochs):
         metrics = GuidedMetrics()
@@ -1033,8 +1037,11 @@ def add_args(parser):
 
     parser.add_argument('--on-device', action='store_true')
 
-    parser.add_argument('--use-learned-scoring-function', action='store_true')
+    parser.add_argument('--use-learned-scoring-function', 
+                        action='store_true')
 
+    parser.add_argument('--only-train-score-network', 
+                        action='store_true')
     parser.add_argument(
         "--train-score-patience", type=int, default=20,
     )

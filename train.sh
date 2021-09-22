@@ -123,6 +123,11 @@ else
 						then
 							cmd+=" --use-learned-scoring-function "
 						fi
+
+						if [ -n "${only_train_score_network}" ] && [ "${only_train_score_network}" == "true" ];
+						then
+							cmd+=" --only-train-score-network "
+						fi
         fi
 	else
 		echo "Input Is Error."
