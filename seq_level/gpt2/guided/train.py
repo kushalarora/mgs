@@ -9,9 +9,11 @@ from torch.utils.data import DataLoader, RandomSampler
 import seq_level.gpt2.guided.utils as ggs_utils
 import seq_level.gpt2.utils as utils
 import seq_level.gpt2.train as train_utils
+
 import os
 from functools import partial
 from seq_level.gpt2.guided.metrics import GuidedMetrics
+from seq_level.gpt2.guided.score_network import ScoreNetwork
 from concurrent.futures import ThreadPoolExecutor
 from pprint import pformat
 
@@ -717,34 +719,6 @@ def shall_accumulate_score_function_training_data(step, total_num_batches, args)
         return True
 
     return False
-
-
-class ScoreNetwork(nn.Module):
-    def __init__(self, input_size, hidden_size=1024):
-        super(ScoreNetwork, self).__init__()
-
-        self.fc = nn.Sequential(
-            nn.Linear(input_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size),
-            nn.ReLU(),
-            nn.Linear(hidden_size, 1))
-
-    def forward(self, model, batch, pad):
-        device = batch.device
-        mask = batch.ne(pad).float().to(device=device)
-        batch_ = deepcopy(batch).to(device=device)
-        batch_[batch == pad] = 0
-
-        model_output = model(batch_,
-                            attention_mask=mask,
-                            output_hidden_states=True)
-
-        emb = model_output \
-                .hidden_states[-1][:, -1, :] \
-                .detach()
-        output = self.fc(emb)
-        return output
 
 
 def train(model, tokenizer, dataset_tensor_dict, args, device):
