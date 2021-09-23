@@ -244,8 +244,12 @@ def log_tensorboard(values_dict, step):
     for k, v in values_dict.items():
         if isinstance(v, int) or isinstance(v, float):
             logger.log_value(k, v, step)
+
+            if step == 0:
+                wandb.summary[k] = v
     try:
-        wandb.log(values_dict)
+        if step > 0:
+            wandb.log(values_dict)
     except:
         # Most probably wandb is not inited.
         pass
@@ -262,6 +266,7 @@ def setup_tensorboard(args):
     if args.wandb:
         wandb.init(project=args.wandb_project_name,
                    name=args.wandb_run_name,
+                   entity='dagger_mgs',
                    config=args)
 
 def setup(args):

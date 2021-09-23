@@ -25,14 +25,14 @@ then
     save_agg_data="true"
     save_score_network="true"
     
-    if [[ "${run_type}" =~ .*_agg.* ]];
+    if [[ "${run_type}" =~ .*use_agg_data.* ]];
     then
       wandb_run+="-aggregated"
       use_agg_data="true"
       agg_data=${agg_data:="datasets/4000_buffer.pkl"}
     fi
 
-    if [[ "${run_type}" =~ .*_score.* ]];
+    if [[ "${run_type}" =~ .*use_score_network.* ]];
     then
       wandb_run+="-score-function"
       use_score_network="true"
@@ -45,7 +45,7 @@ then
       use_learned_score_function="true"
     fi
 
-    if [[ "${run_type}" =~ .*_train_score.* ]]
+    if [[ "${run_type}" =~ .*only_train_score_network.* ]]
     then
       wandb_run+="-only-train-score-network"
       only_train_score_network="true"

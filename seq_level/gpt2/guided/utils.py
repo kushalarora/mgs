@@ -1,13 +1,15 @@
 import torch.nn.functional as F
-from transformers import GPT2LMHeadModel, GPT2Tokenizer
 import editdistance
 import torch
 import numpy as np
 import hashlib
-from copy import deepcopy
 
-from nltk import ngrams
 from collections import Counter
+from copy import deepcopy
+from nltk import ngrams
+from timeit import default_timer as timer
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
+
 from seq_level.gpt2.utils import generate_batch
 
 
@@ -358,3 +360,51 @@ class RNG(object):
     def __exit__(self, type, value, traceback):
         self.rng.manual_seed(self.current_rng_state)
         return True
+
+class TimerObject(object):
+    def __init__(self):
+        self.dict = {"cuml": 0., "tick": 0}
+    
+    def timeit(self, start_time, end_time):
+        self.dict['cuml'] += end_time - start_time
+        self.dict['tick'] += 1
+
+        return self.avg_time()
+
+    def avg_time(self):
+        if self.dict['tick'] == 0:
+            return 0
+        return self.dict['cuml']/self.dict['tick']
+
+    def cuml_time(self):
+        return self.dict.get('cuml')
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, type, value, traceback):
+        pass
+
+class TimerContext(object):
+    _instance = None
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super(TimerContext, cls).__new__(cls)
+            cls._instance.num_instances = 0
+            cls._instance.timers = {}
+        return cls._instance
+
+    def __call__(self, timer_name):
+        if timer_name not in self.timers:
+            self.timers[timer_name] = TimerObject()
+        return self.timers[timer_name]
+        
+    def get_avg_times(self): 
+        times_dict = {}
+        for timer_name, timer_object in self.timers.items():
+            times_dict[timer_name] = timer_object.avg_time()
+        return times_dict
+        
+    def get_timer(self, timer_name):
+        return self.timers.get(timer_name)
