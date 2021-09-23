@@ -139,16 +139,14 @@ TMP_RUN_DIR=${SLURM_TMPDIR}/${OUTPUT_DIR_SUFFIX}
 cmd+=" --save-base-dir ${TMP_RUN_DIR}"
 
 pkill -f "port ${TPORT}"
-sleep 5
 echo "Running Command:"
 
 echo "	$cmd"
 
-if [ -z "${debug}" ]; then
-	tensorboard --logdir ${TMP_RUN_DIR} --port ${TPORT} --host localhost &
-	# For Tensorboard port forwarding based on https://josephpcohen.com/w/jupyter-notebook-and-hpc-systems/.
-	ssh -N -R ${TPORT}:localhost:${TPORT} login-4 &
-fi
+tensorboard --logdir ${TMP_RUN_DIR} --port ${TPORT} --host localhost &
+# For Tensorboard port forwarding based on https://josephpcohen.com/w/jupyter-notebook-and-hpc-systems/.
+ssh -N -R ${TPORT}:localhost:${TPORT} login-4 &
+
 
 $cmd
 
