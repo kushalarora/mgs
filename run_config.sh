@@ -25,18 +25,25 @@ then
     save_agg_data="true"
     save_score_network="true"
     
+    if [ -n ${agg_size} ];
+    then
+      wandb_run+="-${agg_size}"
+    fi
+    
     if [[ "${run_type}" =~ .*use_agg_data.* ]];
     then
-      wandb_run+="-aggregated"
+      agg_size=${agg_size:-4000}
+      wandb_run+="-use-aggregated-${agg_size}"
       use_agg_data="true"
-      agg_data=${agg_data:="datasets/4000_buffer.pkl"}
+      agg_data=${agg_data:="datasets/"${agg_size}"_buffer.pkl"}
     fi
 
     if [[ "${run_type}" =~ .*use_score_network.* ]];
     then
-      wandb_run+="-score-function"
+      agg_size=${agg_size:-4000}
+      wandb_run+="-use-score-function"
       use_score_network="true"
-      score_network=${score_network:="datasets/4000_score_network.pkl"}
+      score_network=${score_network:="datasets/"${agg_size}"_score_network.pkl"}
     fi
 
     if [[ "${run_type}" =~ .*_learned.* ]];

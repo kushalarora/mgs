@@ -128,6 +128,12 @@ else
 						then
 							cmd+=" --only-train-score-network "
 						fi
+
+						if [ -n "${agg_size}" ];
+						then
+							max_buffer_size=$(expr ${agg_size} \* 2)
+							cmd+=" --aggregated-data-size ${agg_size} --max-buffer-size ${max_buffer_size} "
+						fi
         fi
 	else
 		echo "Input Is Error."
