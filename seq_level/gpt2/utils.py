@@ -18,6 +18,7 @@ from torch.utils.data import Dataset
 import wandb
 
 global wandb_run
+wandb_run = None
 
 # -- data utils
 class LineDataset(Dataset):
@@ -146,6 +147,17 @@ def wrap_context_batch(batch, context_length):
     else:
         return torch.stack(context_list, dim=0), max_len_in_batch
 
+def wrap_target_batch(batch, context_length):
+    target_list = []
+    for seq in batch:
+        if seq.size(0) < context_length:
+            continue
+        else:
+            target_list.append(seq[context_length:])
+    if len(context_list) == 0:
+        return torch.tensor([], dtype=torch.long)
+    else:
+        return torch.stack(target_list, dim=0)
 
 def load_dataset(dataset_path, pad, args):
     raw_dataset_dict = pickle.load(open(dataset_path, "rb"))
