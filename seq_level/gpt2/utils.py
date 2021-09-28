@@ -285,6 +285,7 @@ def setup_tensorboard(args):
                                 dir=args.save_base_dir,
                                 name=args.wandb_run_name,
                                 entity='dagger_mgs',
+                                tags=args.wandb_tags,
                                 config=args)
 
 def setup(args):

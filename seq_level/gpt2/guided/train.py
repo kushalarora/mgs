@@ -446,64 +446,6 @@ def add_args(parser):
         "--max-train-steps", type=int, default=-1
     )
 
-    parser.add_argument(
-        "--aggregated-data-size", type=int, default=2000,
-    )
-    parser.add_argument(
-        "--aggregated-data-path", type=str,
-    )
-    parser.add_argument(
-        "--save-aggregated-data", action='store_true',
-    )
-    parser.add_argument(
-        "--use-saved-aggregated-data", action='store_true',
-    )
+    parser = dagger_ggs_utils.add_args(parser)
 
-    parser.add_argument('--include-mle-gradient', action='store_true')
-
-    parser.add_argument(
-        "--max-buffer-size", type=int, default=4000,
-    )
-
-    parser.add_argument(
-        "--score-network-epochs", type=int, default=100,
-    )
-    parser.add_argument(
-        "--retrain-score-network-epochs", type=int, default=30,
-    )
-    parser.add_argument(
-        "--retrain-score-network-every", type=int, default=500
-    )
-    parser.add_argument(
-        "--use-saved-score-network", action='store_true',
-    )
-    parser.add_argument(
-        "--score-network-file", type=str,
-    )
-    parser.add_argument(
-        "--save-score-network", action='store_true',
-    )
-
-    parser.add_argument('--efficient', action='store_true')
-
-    parser.add_argument('--plot-times', action='store_true')
-
-    parser.add_argument('--log-scoring-function', action='store_true')
-
-    parser.add_argument('--on-device', action='store_true')
-
-    parser.add_argument('--use-learned-scoring-function', 
-                        action='store_true')
-
-    parser.add_argument('--only-train-score-network', 
-                        action='store_true')
-    parser.add_argument(
-        "--train-score-patience", type=int, default=20,
-    )
-    parser.add_argument(
-        "--print-decodings", type=str, default=True,
-    )
-    parser.add_argument(
-        "--heuristic", action='store_true',
-    )
     return parser

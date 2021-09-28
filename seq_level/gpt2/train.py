@@ -316,6 +316,7 @@ def main():
     parser.add_argument('--wandb', action='store_true')
     parser.add_argument('--wandb-project-name', type=str, default='efficient_mgs')
     parser.add_argument('--wandb-run-name', type=str, default=None)
+    parser.add_argument('--wandb-tags', nargs='+', type=str,)
 
     from seq_level.gpt2.guided.train import add_args
     parser = add_args(parser)
