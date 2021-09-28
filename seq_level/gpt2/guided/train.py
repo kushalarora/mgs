@@ -14,7 +14,7 @@ import seq_level.gpt2.guided.ggs_efficient_utils as dagger_ggs_utils
 import os
 from functools import partial
 from seq_level.gpt2.guided.metrics import GuidedMetrics
-from seq_level.gpt2.guided.score_network import ScoreNetwork
+import seq_level.gpt2.guided.score_network as score_network_utils
 from concurrent.futures import ThreadPoolExecutor
 from pprint import pformat
 
@@ -226,19 +226,16 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
                                             args.save_base_dir, "persistence_datastore"),
                                         on_device=args.on_device)
 
-        initial_training_epochs = args.score_network_epochs
         # If using saved score network, use it, else accumulate training data, 
         # and train network on the accumulated data.
-        if args.use_saved_score_network:
-            checkpoint = torch.load(args.score_network_file)
-            score_network.load_state_dict(checkpoint['model_save_dict'])
-            epochs = score_model_checkpoint['epochs']
-            logging.info(f"Loading scorer trained for {epochs} epochs" + \
-                            f" from {args.score_network_file}.")
-            initial_training_epochs = args.retrain_score_network_epochs
-        else:
-            score_network = ScoreNetwork(input_size=config.hidden_size) \
-                                .to(device=device)
+
+        score_network = score_network_utils.build_score_network(
+                                        input_size=config.hidden_size, 
+                                        args=args)
+        
+        initial_training_epochs = args.retrain_score_network_epochs
+        if not args.use_saved_score_network:
+            initial_training_epochs = args.score_network_epochs
 
             if not args.use_saved_aggregated_data:
                 logging.info("Started Initial Data Accumulation.")
@@ -251,8 +248,6 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
                                             batch_id, batch, buffer, model, 
                                             score_model, tokenizer, args, device)
 
-
-                    
                     scorer_acc_timer = timer_context.get_timer('scorer_data_acc_time')
                     if step % args.print_every == 0:
                         logging.info(f"Aggregated Batches:  {step}/{total_num_batches}. " + \

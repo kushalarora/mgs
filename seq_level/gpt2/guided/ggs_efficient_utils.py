@@ -15,9 +15,9 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
+import seq_level.gpt2.guided.score_network as score_network_utils
 import seq_level.gpt2.guided.utils as ggs_utils
 import seq_level.gpt2.utils as utils
-
 timer_context = ggs_utils.TimerContext()
 def _hash_tensor(obj):
     return hashlib.sha1(bytes(obj.cpu().numpy())).hexdigest()
@@ -81,7 +81,7 @@ class RingBuffer:
 
         if len(queue) >= queue_max_size:
             (_, _, old_batch_key, old_model_key,
-             _, _, _, _) = queue.pop(0)
+             old_seq_key, _, _, _) = queue.pop(0)
             logging.debug("Removing item from Queue: " +
                           f"Batch: {old_batch_key} " +
                           f"Model: {old_model_key}.")
@@ -95,6 +95,11 @@ class RingBuffer:
             if self.db_counter[old_batch_key] == 0:
                 del self.db_counter[old_batch_key]
                 del self.db[old_batch_key]
+
+            self.db_counter[old_seq_key] -= 1
+            if self.db_counter[old_seq_key] == 0:
+                del self.db_counter[old_seq_key]
+                del self.db[old_seq_key]
 
         # batch_key = f"batch_{_hash_tensor(batch)}"
         batch_key = f"batch_{batch_id}"
@@ -116,7 +121,13 @@ class RingBuffer:
             self.db_counter[model_key] = 0
         self.db_counter[model_key] += 1
 
-        sequences_key = None
+        sequences_key =  f"seq_{batch_id}_{MODEL_ID}"
+        if sequences_key not in self.db:
+            if not self.on_device:
+                batch = deepcopy(sequences).to(device=torch.device("cpu"))
+            self.db[sequences_key] = sequences
+            self.db_counter[sequences_key] = 0
+        self.db_counter[sequences_key] += 1
 
         if not self.on_device:
             distances = distances.cpu()
@@ -133,8 +144,8 @@ class RingBuffer:
             for (idx, type, batch_key, model_key, sequences_key, 
                     distances, rng_state, apply_to_mle_grad) in iterable:
 
-                batch = self.db[batch_key].type(torch.long)
-                sequences = None
+                batch = self.db[batch_key]
+                sequences = self.db[sequences_key]
                 model = self.db[model_key]
 
                 if distances.size(0) != batch.size(0):
@@ -238,15 +249,14 @@ def perturb(model, batch, step, tokenizer, args, device=None,
     return per_model, rng_state, apply_to_mle_grad
 
 
-def get_train_score_network_loss(idx, type, model, batch, distances, 
-                                      score_network, tokenizer, device):
+def get_train_score_network_loss(idx, type, model, batch, distances, sequences,
+                                      score_network, tokenizer, device, args):
     model = model.to(device=device)
     model.eval()
 
     batch = batch.to(device=device)
-    pad = tokenizer.pad_token_id
 
-    outputs = score_network(model, batch, pad)
+    outputs = score_network(model, batch, predictions=sequences)
 
     distances = distances.to(device=device)
     if distances.size(0) != outputs.size(0):
@@ -260,32 +270,162 @@ def get_train_score_network_loss(idx, type, model, batch, distances,
     )
     return loss, outputs
 
+class ScorerAnalysis:
+    def __init__(self, prefix):
+        # idx => {'original': (true_dist, pred_dist), 
+        #         'perturbed': [(true_dist, pred_dist)]}
+        self.scorer_diff_fit_dict = {}
+        self.cuml_loss = 0.
+        self.cuml_pert_loss = 0.
+        self.cuml_non_pert_loss = 0.
+
+        self.cuml_scorer_fit_all = 0.
+        self.cuml_scorer_fit_pert = 0.
+        self.cuml_scorer_fit_non_pert = 0.
+
+        self.num_docs = 0
+        self.num_docs_pert = 0
+        self.num_docs_non_pert = 0
+
+        self.true_dist = []
+        self.pred_dist = []
+
+        self.true_dist_pert = []
+        self.true_dist_non_pert = []
+        self.pred_dist_pert = []
+        self.pred_dist_non_pert = []
+
+        self.cuml_scorer_diff_fit = 0.
+        self.scorer_diff_fit_count = 0
+        
+        self.cuml_pred_dist = 0.
+        self.cuml_true_dist = 0.
+        
+        self.cuml_pred_dist_pert = 0.
+        self.cuml_pred_dist_non_pert = 0.
+        self.cuml_true_dist_pert = 0.
+        self.cuml_true_dist_non_pert = 0.
+
+        self.prefix = prefix
+
+    def __call__(self, idx, type, batch, 
+                 loss, true_dist, pred_dist):
+        self.cuml_loss += loss.item()
+
+        self.true_dist += true_dist.tolist()
+        self.pred_dist += pred_dist.tolist()
+        
+        scorer_fit = (torch.abs(true_dist - pred_dist)/pred_dist)\
+                        .sum().item()
+        
+        self.cuml_scorer_fit_all += scorer_fit
+        self.num_docs += batch.size(0)
+
+        if idx not in self.scorer_diff_fit_dict:
+            self.scorer_diff_fit_dict[idx] = {
+                                   'non_pert': None, 
+                                   'perturbed': [],
+                                }
+        
+        self.cuml_pred_dist += pred_dist.mean().item()
+        self.cuml_true_dist += true_dist.mean().item()
+        if type == "perturbed":
+            self.num_docs_pert += batch.size(0)
+            self.cuml_pert_loss += loss.item()
+            self.true_dist_pert += true_dist.tolist()
+            self.pred_dist_pert += pred_dist.tolist()
+            self.cuml_scorer_fit_pert += scorer_fit
+            self.scorer_diff_fit_dict[idx]['perturbed'].append((true_dist.mean(), 
+                                                                pred_dist.mean()))
+            self.cuml_pred_dist_pert += pred_dist.mean().item()
+            self.cuml_true_dist_pert += true_dist.mean().item()
+        else:
+            self.num_docs_non_pert += batch.size(0)
+            self.cuml_non_pert_loss += loss.item()
+            self.true_dist_non_pert += true_dist.tolist()
+            self.pred_dist_non_pert += pred_dist.tolist()
+            self.cuml_scorer_fit_non_pert += scorer_fit
+            self.scorer_diff_fit_dict[idx]['non_pert'] = (true_dist.mean(), 
+                                                          pred_dist.mean())
+            self.cuml_pred_dist_non_pert += pred_dist.mean().item()
+            self.cuml_true_dist_non_pert += true_dist.mean().item()
+
+    def reset(self):
+        self.scorer_diff_fit_dict = {}
+        self.cuml_pert_loss = 0.
+        self.cuml_non_pert_loss = 0.
+
+        self.cuml_scorer_fit_all = 0.
+        self.cuml_scorer_fit_pert = 0.
+        self.cuml_scorer_fit_non_pert = 0.
+
+        self.num_docs_pert = 0
+        self.num_docs_non_pert = 0
+
+
+        self.true_dist = []
+        self.pred_dist = []
+
+        self.true_dist_pert = []
+        self.true_dist_non_pert = []
+        self.pred_dist_pert = []
+        self.pred_dist_non_pert = []
+        
+        self.cuml_pred_dist = 0.
+        self.cuml_true_dist = 0.
+        
+        self.cuml_pred_dist_pert = 0.
+        self.cuml_pred_dist_non_pert = 0.
+        self.cuml_true_dist_pert = 0.
+        self.cuml_true_dist_non_pert = 0.
+
+    def get_metrics(self):
+        for idx, diff_dict in self.scorer_diff_fit_dict.items():
+            non_pert_true_score, non_pert_pred_score = diff_dict['non_pert']
+
+            pertured_scores = diff_dict['perturbed']
+            for perturb_true_score, perturb_pred_score in pertured_scores:
+                if (perturb_true_score - non_pert_true_score) == 0:
+                    logging.debug(f"For idx: {idx}," + 
+                        f" perturbed score: {perturb_true_score:.3f}" + 
+                        f" non_pert score: {non_pert_true_score:.3f}" + 
+                         " are equal.")
+                    continue
+
+                self.cuml_scorer_diff_fit += torch.abs((perturb_pred_score - non_pert_pred_score)/(perturb_true_score - non_pert_true_score)).item()
+                self.scorer_diff_fit_count += 1
+
+        return {
+          f"{self.prefix}/corr_all": kendalltau(self.true_dist, self.pred_dist)[0],
+          f"{self.prefix}/corr_pert": kendalltau(self.true_dist_pert, self.pred_dist_pert)[0],
+          f"{self.prefix}/corr_non_pert": kendalltau(self.true_dist_non_pert,
+                                                     self.pred_dist_non_pert)[0],
+
+          f"{self.prefix}/loss_all": self.cuml_loss / self.num_docs,
+          f"{self.prefix}/loss_pert": self.cuml_pert_loss / self.num_docs_pert,
+          f"{self.prefix}/loss_non_pert": self.cuml_non_pert_loss / self.num_docs_non_pert, 
+
+          f"{self.prefix}/scorer_fit_all": self.cuml_scorer_fit_all / self.num_docs,
+          f"{self.prefix}/scorer_fit_pert": self.cuml_scorer_fit_pert / self.num_docs_pert,
+          f"{self.prefix}/scorer_fit_non_pert": self.cuml_scorer_fit_non_pert / self.num_docs_non_pert,
+
+          f"{self.prefix}/scorer_diff_fit": self.cuml_scorer_diff_fit / self.scorer_diff_fit_count,
+
+          f"{self.prefix}/avg_true_dist_all": self.cuml_true_dist/self.num_docs, 
+          f"{self.prefix}/avg_true_dist_pert": self.cuml_true_dist_pert/self.num_docs_pert, 
+          f"{self.prefix}/avg_true_dist_non_pert": self.cuml_true_dist_non_pert/self.num_docs_non_pert,
+
+          f"{self.prefix}/avg_pred_dist_all":self.cuml_pred_dist/self.num_docs, 
+          f"{self.prefix}/avg_pred_dist_pert":self.cuml_pred_dist_pert/self.num_docs_pert,
+          f"{self.prefix}/avg_pred_dist_non_pert":self.cuml_pred_dist_non_pert/self.num_docs_non_pert, 
+        }
 
 def validate_score_network(valid_iter, score_network, tokenizer, device, args):
     cuml_valid_loss = 0.
-    cuml_perturbed_loss = 0.
-    cuml_non_perturbed_loss = 0.
-
-    cuml_scorer_fit_all = 0.
-    cuml_scorer_fit_perturbed = 0.
-    cuml_scorer_fit_original = 0.
-
     num_docs = 0
-    num_docs_perturbed = 0
-    num_docs_non_perturbed = 0
-
-    # idx => {'original': (true_dist, pred_dist), 'perturbed': [(true_dist, pred_dist)]}
-    scorer_diff_fit_dict = {}
-
-    true_distances = []
-    predicted_distances = []
-
-    true_distances_perturbed = []
-    true_distances_non_perturbed = []
-    predicted_distances_perturbed = []
-    predicted_distances_non_perturbed = []
-
-    for step, (idx, type, batch, model, _, distances,
+    valid_scorer_analysis = ScorerAnalysis('valid')
+    score_network.eval()
+    for step, (idx, type, batch, model, sequences, distances,
                 rng_state, apply_to_mle_grad) in enumerate(valid_iter):
 
         if type == "perturbed":
@@ -294,78 +434,24 @@ def validate_score_network(valid_iter, score_network, tokenizer, device, args):
                                   apply_to_mle_grad=apply_to_mle_grad)
 
         loss, pred_distances = get_train_score_network_loss(idx, 
-                                    type, model, batch, distances, 
-                                    score_network, tokenizer, device)
+                                    type, model, batch, distances, sequences,
+                                    score_network, tokenizer, device, args)
 
         if loss < 0:
             continue
 
-        pred_distances = pred_distances.squeeze(1).detach()
-
-        true_distances += distances.tolist()
-        predicted_distances += pred_distances.tolist()
-        scorer_fit = torch.sum(torch.abs(distances - pred_distances)/pred_distances).item()
-        
         cuml_valid_loss += loss.item()
-        cuml_scorer_fit_all += scorer_fit
-
         num_docs += batch.size(0)
-
-        if idx not in scorer_diff_fit_dict:
-            scorer_diff_fit_dict[idx] = {'original': None, 
-                                          'perturbed': [],}
-        
-        if type == "perturbed":
-            num_docs_perturbed += batch.size(0)
-            cuml_perturbed_loss += loss.item()
-            true_distances_perturbed += distances.tolist()
-            predicted_distances_perturbed += pred_distances.tolist()
-            cuml_scorer_fit_perturbed = scorer_fit
-            scorer_diff_fit_dict[idx]['perturbed'].append((distances.mean(), pred_distances.mean()))
-        else:
-            num_docs_non_perturbed += batch.size(0)
-            cuml_non_perturbed_loss += loss.item()
-            true_distances_non_perturbed += distances.tolist()
-            predicted_distances_non_perturbed += pred_distances.tolist()
-            cuml_scorer_fit_original += scorer_fit
-            scorer_diff_fit_dict[idx]['original'] = (distances.mean(), pred_distances.mean())
+        pred_distances = pred_distances.squeeze(1).detach()
+        valid_scorer_analysis(idx, type, batch, loss, distances, pred_distances)
 
         if step % 5 == 0 and step > 0:
             print('Validation:: Step: %d, Loss: %.3f'
                   % (step, cuml_valid_loss / num_docs), end='\r')
     print()
 
-    cuml_scorer_diff_fit = 0.
-    func_diff_fit_count = 0
-    for idx, diff_dict in scorer_diff_fit_dict.items():
-        original_true_score, original_pred_score = diff_dict['original']
-        pertured_scores = diff_dict['perturbed']
-
-        for perturb_true_score, perturb_pred_score in pertured_scores:
-            if (perturb_true_score - original_true_score) == 0:
-                logging.debug(f"For idx: {idx}," + 
-                                f" perturbed score: {perturb_true_score:.3f}" + 
-                                f" original score: {original_true_score:.3f}" + 
-                                " are equal.")
-                continue
-
-            cuml_scorer_diff_fit += torch.abs((perturb_pred_score - original_pred_score)/(perturb_true_score - original_true_score)).item()
-            func_diff_fit_count += 1
-
-    valid_info_dict = {
-          "all_corr": kendalltau(true_distances, predicted_distances)[0],
-          "perturbed_corr": kendalltau(true_distances_perturbed, 
-                                        predicted_distances_perturbed)[0],
-          "original_corr": kendalltau(true_distances_non_perturbed,
-                                        predicted_distances_non_perturbed)[0],
-          "perturbed_loss": cuml_perturbed_loss / num_docs_perturbed,
-          "original_loss": cuml_non_perturbed_loss / num_docs_non_perturbed, 
-          "scorer_fit_all": cuml_scorer_fit_all / num_docs,
-          "scorer_fit_perturbed": cuml_scorer_fit_perturbed / num_docs_perturbed,
-          "scorer_fit_original": cuml_scorer_fit_original / num_docs_non_perturbed,
-          "scorer_diff_fit": cuml_scorer_diff_fit / func_diff_fit_count,
-        }
-    return cuml_valid_loss/num_docs, valid_info_dict
+    valid_info_dict = valid_scorer_analysis.get_metrics()
+    return cuml_valid_loss/max(num_docs, 1), valid_info_dict
 
 
 def train_score_network(buffers, score_network, tokenizer, device, 
@@ -386,32 +472,42 @@ def train_score_network(buffers, score_network, tokenizer, device,
     print('=' * 100)
     print('Start training the score network.\n')
 
-    score_network.train()
     score_network = score_network.to(device=device)
 
-    phi_optimizer = optim.Adam(score_network.parameters(), lr=0.001)
-    scheduler = optim.lr_scheduler.StepLR(phi_optimizer, step_size=20, gamma=0.5, verbose=True)
+    phi_optimizer = optim.AdamW(score_network.parameters(), lr=args.scorer_lr)
+    scheduler = optim.lr_scheduler.StepLR(phi_optimizer, step_size=10, gamma=0.5, verbose=True)
+    # scheduler = optim.lr_scheduler.ReduceLROnPlateau(phi_optimizer, 'min', patience=5, verbose=True)
 
+    # _, valid_iterator = buffers.get_iterators()
+    # valid_loss, valid_info_dict = validate_score_network(
+    #                                 valid_iterator, score_network,
+    #                                 tokenizer, device, args)
     for epoch in range(epochs):
+        score_network.train()
+        train_scorer_analysis = ScorerAnalysis('train')
         train_iterator, valid_iterator = buffers.get_iterators()
         cuml_train_loss = 0.
         num_docs = 0
         
         with timer_context('train_score_network_time') as ctxt_timer:
             start_time = timer()
-            for step, (idx, type, batch, model, _, distances, rng_state,
+            for step, (idx, type, batch, model, sequences, distances, rng_state,
                             apply_to_mle_grad) in enumerate(train_iterator):
 
                 phi_optimizer.zero_grad()
                 if type == "perturbed":
                     model, _, _ = perturb(model, batch, idx, tokenizer, args, 
                                     device=device, rng_state=rng_state, apply_to_mle_grad=apply_to_mle_grad)
-
-                loss, _ = get_train_score_network_loss(idx, 
-                            type, model, batch, distances, score_network, tokenizer, device)
+        
+                loss, pred_distances = get_train_score_network_loss(idx, 
+                                            type, model, batch, distances, sequences,
+                                            score_network, tokenizer, device, args)
 
                 if loss < 0:
                     continue
+
+                pred_distances = pred_distances.squeeze(1).detach()
+                train_scorer_analysis(idx, type, batch, loss, distances, pred_distances)
 
                 cuml_train_loss += loss.item()
                 num_docs += batch.size(0)
@@ -431,14 +527,19 @@ def train_score_network(buffers, score_network, tokenizer, device,
 
             print()
             end_time = timer()
+            train_info_dict = train_scorer_analysis.get_metrics()
+            print(pformat(train_info_dict))
+
             ctxt_timer.timeit(start_time, end_time)
         
-        with timer_context('validate_score_network_time') as ctxt_time:
+        with timer_context('validate_score_network_time') as ctxt_timer:
             start_time = timer()
             train_loss = cuml_train_loss / num_docs
             valid_loss, valid_info_dict = validate_score_network(
                                             valid_iterator, score_network,
                                             tokenizer, device, args)
+            # scheduler.step(valid_loss)
+            scheduler.step()
 
             if min_valid_loss < valid_loss:
                 patience_counter += 1
@@ -446,14 +547,12 @@ def train_score_network(buffers, score_network, tokenizer, device,
                 patience_counter = 0
                 min_valid_loss = valid_loss
                 best_score_network = deepcopy(score_network)
-                logging.info(pformat(valid_info_dict))
 
-            if not args.only_train_score_network and \
-                patience_counter > args.train_score_patience:
+            print(pformat(valid_info_dict))
+            if patience_counter > args.train_score_patience:
                 logging.info(f"Stopping Early at epoch: {epoch} with best validation loss: {min_valid_loss}")
                 break
 
-            scheduler.step()
             
             end_time = timer()
             ctxt_timer.timeit(start_time, end_time)
@@ -468,12 +567,14 @@ def train_score_network(buffers, score_network, tokenizer, device,
 
         prefix = f"train_score_network_{train_score_network_iteration}/"
         valid_metrics = {
-            prefix + "train_loss": train_loss,
             prefix + "valid_loss": valid_loss,
             prefix + "min_valid_loss": min_valid_loss,
         }
 
         for key, val in valid_info_dict.items():
+            valid_metrics[prefix + key] = val
+
+        for key, val in train_info_dict.items():
             valid_metrics[prefix + key] = val
 
         utils.log_tensorboard(valid_metrics, epoch)
@@ -506,7 +607,7 @@ def dagger_mgs_scoring_function(score_network, model, tokenizer,
       pad = tokenizer.pad_token_id
       batch = batch.to(device=model.device)
 
-      batched_distances = score_network(model, batch, pad) \
+      batched_distances = score_network(model, batch) \
                               .detach().cpu()
 
       # average across batch to compute c(\theta).
@@ -532,3 +633,77 @@ def shall_accumulate_scorer_training_data(step, total_num_batches, args):
 
     return False
 
+def add_args(parser):
+    parser.add_argument(
+        "--aggregated-data-size", type=int, default=2000,
+    )
+    parser.add_argument(
+        "--aggregated-data-path", type=str,
+    )
+    parser.add_argument(
+        "--save-aggregated-data", action='store_true',
+    )
+    parser.add_argument(
+        "--use-saved-aggregated-data", action='store_true',
+    )
+
+    parser.add_argument('--include-mle-gradient', action='store_true')
+
+    parser.add_argument(
+        "--max-buffer-size", type=int, default=4000,
+    )
+
+    parser.add_argument(
+        "--score-network-epochs", type=int, default=100,
+    )
+    parser.add_argument(
+        "--retrain-score-network-epochs", type=int, default=30,
+    )
+
+    parser.add_argument(
+        "--retrain-score-network-every", type=int, default=500
+    )
+    parser.add_argument(
+        "--use-saved-score-network", action='store_true',
+    )
+    parser.add_argument(
+        "--score-network-file", type=str,
+    )
+    parser.add_argument(
+        "--save-score-network", action='store_true',
+    )
+
+    parser.add_argument('--efficient', action='store_true')
+
+    parser.add_argument('--plot-times', action='store_true')
+
+    parser.add_argument('--log-scoring-function', action='store_true')
+
+    parser.add_argument('--on-device', action='store_true')
+
+    parser.add_argument('--use-learned-scoring-function', 
+                        action='store_true')
+
+    parser.add_argument('--only-train-score-network', 
+                        action='store_true')
+
+    parser.add_argument(
+        "--train-score-patience", type=int, default=20,
+    )
+    parser.add_argument(
+        "--print-decodings", type=str, default=True,
+    )
+    parser.add_argument(
+        "--heuristic", action='store_true',
+    )
+
+    parser.add_argument(
+        "--use-sigmoid-for-scores", action='store_true',
+    )
+
+    parser.add_argument(
+        "--scorer-lr", type=float, default=2e-4,
+    )
+
+    score_network_utils.add_args(parser)
+    return parser

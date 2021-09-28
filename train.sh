@@ -31,9 +31,9 @@ TPORT=${port:=8001}
 EXP_NAME=${exp_name:="wikipedia103/"}"_${MODEL_NAME}_${loss}"
 OUTPUT_DIR_SUFFIX="${MODEL_NAME}_${loss}_${SLURM_JOB_ID}"
 SAVE_BASE_DIR=${save_dir:-"./results/wikipedia103"}
-
-if [ -d ${SAVE_BASE_DIR} ]; then
-	mkdir -p ${SAVE_BASE_DIR}
+SAVE_DIR=${SAVE_BASE_DIR}/${OUTPUT_DIR_SUFFIX}
+if [ -d ${SAVE_DIR} ]; then
+	mkdir -p ${SAVE_DIR}
 fi 
 
 . ./run_config.sh
@@ -42,11 +42,15 @@ cmd="python -u seq_level/gpt2/train.py --dataset-path=$SLURM_TMPDIR/wikitext103_
 
 if [  -n "${wandb}" ] && [ "${wandb}" == "true" ];
 then
-	cmd+=" --wandb"
+	cmd+=" --wandb "
 
 	if [ -n "${wandb_run}" ]; 
 	then
-		cmd+=" --wandb-run-name ${wandb_run}"
+		cmd+=" --wandb-run-name ${wandb_run} "
+	fi
+
+	if [ -n "${wandb_tags}" ]; then
+		cmd+=" --wandb-tags ${wandb_tags} "
 	fi
 fi
 if [ ${loss} = mle ];
@@ -134,6 +138,20 @@ else
 							max_buffer_size=$(expr ${agg_size} \* 2)
 							cmd+=" --aggregated-data-size ${agg_size} --max-buffer-size ${max_buffer_size} "
 						fi
+
+						if [ -n "${score_patience}" ];
+						then
+							cmd+="  --train-score-patience ${score_patience}";
+						fi
+
+						if [ -n "${scorer_type}" ]; then
+							cmd+=" --score-network-type ${scorer_type}"
+						fi
+
+						if [ -n "${scorer_nlayers}" ]; then
+							cmd+=" --score-network-num-layers ${scorer_nlayers}"
+						fi
+
         fi
 	else
 		echo "Input Is Error."
@@ -157,5 +175,5 @@ ssh -N -R ${TPORT}:localhost:${TPORT} login-4 &
 $cmd
 
 if [ -z "${debug}" ]; then
-	rsync -avz ${TMP_RUN_DIR} ${SAVE_BASE_DIR}/${OUTPUT_DIR_SUFFIX}
+	rsync -avz ${TMP_RUN_DIR} ${SAVE_DIR}
 fi

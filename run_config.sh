@@ -1,6 +1,6 @@
 set -x
-wandb=true
-debug=false
+wandb=${wandb:="true"}
+debug=${debug:="false"}
 
 if [[ ${run_type} =~ mle.* ]];
 then
@@ -25,14 +25,14 @@ then
     save_agg_data="true"
     save_score_network="true"
     
-    if [ -n ${agg_size} ];
+    if [ -n "${agg_size}" ] && [ "${agg_size}" != "" ];
     then
       wandb_run+="-${agg_size}"
     fi
     
     if [[ "${run_type}" =~ .*use_agg_data.* ]];
     then
-      agg_size=${agg_size:-4000}
+      agg_size=${agg_size:=4000}
       wandb_run+="-use-aggregated-${agg_size}"
       use_agg_data="true"
       agg_data=${agg_data:="datasets/"${agg_size}"_buffer.pkl"}
@@ -40,7 +40,7 @@ then
 
     if [[ "${run_type}" =~ .*use_score_network.* ]];
     then
-      agg_size=${agg_size:-4000}
+      agg_size=${agg_size:=4000}
       wandb_run+="-use-score-function"
       use_score_network="true"
       score_network=${score_network:="datasets/"${agg_size}"_score_network.pkl"}
@@ -60,8 +60,14 @@ then
   fi
 fi
 
+if [ -n "${wandb_suffix}" ]; then
+  wandb_run+="-${wandb_suffix}"
+fi
+
 if [[ ${run_type} =~ .*_debug ]];
 then
   wandb="false"
   debug="true"
 fi
+
+echo "WANDB_RUN_NAME=${wandb_run}"
