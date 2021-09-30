@@ -13,6 +13,15 @@
 # 2. Load your environment
 # conda activate torch181
 
+get_random_port() {
+	floor=3000;
+	cieling=8000;
+	range=$(($cieling - $floor+1))
+	port=$RANDOM
+	let "port %= $range"
+	port=$(($port+$floor));
+	echo $port
+}
 module load python/3.7
 if [ ! -d ${HOME}/envs/mgs ]; then
 	python -m venv ${HOME}/envs/mgs;
@@ -27,7 +36,7 @@ rsync -avz ./datasets/wikitext103_raw_gpt2bpe.pkl $SLURM_TMPDIR
 
 MODEL_NAME=${model_name:="gpt2"}
 loss=${loss:="mle"}
-TPORT=${port:=8001}
+TPORT=${port:-$(get_random_port)}
 EXP_NAME=${exp_name:="wikipedia103/"}"_${MODEL_NAME}_${loss}"
 OUTPUT_DIR_SUFFIX="${MODEL_NAME}_${loss}_${SLURM_JOB_ID}"
 SAVE_BASE_DIR=${save_dir:-"./results/wikipedia103"}
@@ -169,6 +178,7 @@ echo "Running Command:"
 
 echo "	$cmd"
 
+echo	"####### Tensorboard on port ${TPORT} ########"
 tensorboard --logdir ${TMP_RUN_DIR} --port ${TPORT} --host localhost &
 # For Tensorboard port forwarding based on https://josephpcohen.com/w/jupyter-notebook-and-hpc-systems/.
 ssh -N -R ${TPORT}:localhost:${TPORT} login-4 &
