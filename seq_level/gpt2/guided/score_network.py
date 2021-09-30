@@ -196,7 +196,7 @@ def add_args(parser):
         "--score-network-num-layers", type=int, default=1,
     )
     parser.add_argument(
-        "--score-network-dropout-ratio", type=float, default=0.3,
+        "--score-network-dropout-ratio", type=float, default=0.0,
     )
     parser.add_argument(
         "--score-network-type", type=str, default="simple_mlp",
