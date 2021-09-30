@@ -17,6 +17,12 @@ def build_score_network(input_size, args):
     elif model_type == 'simple_mlp_w_predictions':
         args.score_network_train_on_predictions = True
         score_network = ScoreNetworkSimpleMLPwLayerNorm(input_size, args)
+    elif model_type == 'simple_mlp_w_predictions_targets':
+        score_network = ScoreNetworkSimpleMLPwPredictionTarget(input_size, args)
+    elif model_type == 'simple_mlp_complete_context':
+        score_network = ScoreNetworkSimpleMLPwCompleteContext(input_size, args)
+    elif model_type == 'simple_mlp_complete_context_v2':
+        score_network = ScoreNetworkSimpleMLPwCompleteContextV2(input_size, args)
     else:
         raise ValueError(f"Score Model Type: {model_type} not found!")
     
@@ -85,7 +91,7 @@ class ScoreNetworkSimpleMLP(ScoreNetworkBase):
         for _ in range(self.num_layers):
             emb = self.fc(emb)
         output = self.output_layer(emb)
-        return output
+        return F.softplus(output)
 
 class ScoreNetworkSimpleMLPwReLU(ScoreNetworkSimpleMLP):
     def __init__(self, input_size, args):
@@ -111,17 +117,83 @@ class ScoreNetworkSimpleMLPwLayerNorm(ScoreNetworkSimpleMLPwReLU):
 
         emb = self.layer_norm_input(emb)
         emb = self.dropout(self.input_layer(emb))
-        for _ in range(self.num_layers):
+        for _ in range(self.num_layers - 1):
             emb = self.layer_norm_hidden(emb + self.fc(emb))
+        emb = self.fc(emb)
         output = self.output_layer(emb)
-        return output
+        return F.softplus(output)
+
+class ScoreNetworkSimpleMLPwPredictionTarget(ScoreNetworkSimpleMLPwLayerNorm):
+    def __init__(self, input_size, args):
+        super(ScoreNetworkSimpleMLPwPredictionTarget, self).__init__(input_size * 2, args)
+
+    def forward(self, model, batch, predictions=None):
+        inp, target = batch[:, :-1], batch[:, 1:]
+        pred_model_output =  self._get_model_output(model, predictions)
+        target_model_output = self._get_model_output(model, inp)
+
+        pred_emb = pred_model_output.hidden_states[-1][:, -1]
+        tgt_emb = target_model_output.hidden_states[-1][:, -1]
+
+        emb = torch.cat([pred_emb, tgt_emb], dim=-1)
+
+        emb = self.layer_norm_input(emb)
+        emb = self.dropout(self.input_layer(emb))
+        for _ in range(self.num_layers - 1):
+            emb = self.layer_norm_hidden(self.fc(emb))
+        emb = self.fc(emb)
+        output = self.output_layer(emb)
+
+        # torch.exp ensures score is in the range (0, +\inf)
+        return F.softplus(output)
+
+class ScoreNetworkSimpleMLPwCompleteContext(ScoreNetworkSimpleMLPwLayerNorm):
+    def __init__(self, input_size, args):
+        super(ScoreNetworkSimpleMLPwCompleteContext, self).__init__(args=args,
+                                            input_size=input_size * args.context_length)
+
+    def forward(self, model, batch, predictions=None):
+        input = self._get_input(batch, predictions)
+        model_output = self._get_model_output(model, input)
+        batch_size = batch.size(0)
+        emb = model_output\
+                .hidden_states[-1].view(batch_size, -1)
+
+        emb = self.layer_norm_input(emb)
+        emb = self.dropout(self.input_layer(emb))
+        for _ in range(self.num_layers - 1):
+            emb = self.layer_norm_hidden(emb + self.fc(emb))
+        emb = self.fc(emb)
+        output = self.output_layer(emb)
+        return F.softplus(output)
+
+class ScoreNetworkSimpleMLPwCompleteContextV2(ScoreNetworkSimpleMLPwLayerNorm):
+    def __init__(self, input_size, args):
+        super(ScoreNetworkSimpleMLPwCompleteContextV2, self).__init__(args=args,
+                                            input_size=input_size)
+        self.output_layer = nn.Linear(self.hidden_size * args.context_length, 1)
+
+    def forward(self, model, batch, predictions=None):
+        input = self._get_input(batch, predictions)
+        model_output = self._get_model_output(model, input)
+        batch_size = batch.size(0)
+        emb = model_output\
+                .hidden_states[-1].view(-1, self.input_size)
+
+        emb = self.layer_norm_input(emb)
+        emb = self.dropout(self.input_layer(emb))
+        for _ in range(self.num_layers - 1):
+            emb = self.layer_norm_hidden(emb + self.fc(emb))
+        emb = self.fc(emb)
+        output = self.output_layer(emb.view(batch_size, -1))
+        return F.softplus(output)
 
 def add_args(parser):
     parser.add_argument(
         "--score-network-hidden-size", type=int, default=1024,
     )
     parser.add_argument(
-        "--score-network-num-layers", type=int, default=3,
+        "--score-network-num-layers", type=int, default=1,
     )
     parser.add_argument(
         "--score-network-dropout-ratio", type=float, default=0.3,
@@ -131,5 +203,8 @@ def add_args(parser):
     )
     parser.add_argument(
         "--score-network-train-on-predictions", action='store_true',
+    )
+    parser.add_argument(
+        "--score-network-train-on-predictions-targets", action='store_true',
     )
     return parser

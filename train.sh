@@ -141,17 +141,19 @@ else
 
 						if [ -n "${score_patience}" ];
 						then
-							cmd+="  --train-score-patience ${score_patience}";
+							cmd+="  --train-score-patience ${score_patience} ";
 						fi
 
 						if [ -n "${scorer_type}" ]; then
-							cmd+=" --score-network-type ${scorer_type}"
+							cmd+=" --score-network-type ${scorer_type} ";
 						fi
 
 						if [ -n "${scorer_nlayers}" ]; then
-							cmd+=" --score-network-num-layers ${scorer_nlayers}"
+							cmd+=" --score-network-num-layers ${scorer_nlayers} ";
 						fi
-
+						if [ -n "${scorer_lr}" ]; then
+							cmd+=" --scorer-lr ${scorer_lr} ";
+						fi
         fi
 	else
 		echo "Input Is Error."
