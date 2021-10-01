@@ -8,6 +8,7 @@ from timeit import default_timer as timer
 import hashlib
 import logging
 import math
+import numpy as np
 import os
 import random
 import shelve
@@ -287,6 +288,7 @@ class ScorerAnalysis:
         self.num_docs_pert = 0
         self.num_docs_non_pert = 0
 
+        self.loss_list = []
         self.true_dist = []
         self.pred_dist = []
 
@@ -294,6 +296,8 @@ class ScorerAnalysis:
         self.true_dist_non_pert = []
         self.pred_dist_pert = []
         self.pred_dist_non_pert = []
+        self.loss_list_pert = []
+        self.loss_list_non_pert = []
 
         self.cuml_scorer_diff_fit = 0.
         self.scorer_diff_fit_count = 0
@@ -310,11 +314,14 @@ class ScorerAnalysis:
 
     def __call__(self, idx, type, batch, 
                  losses, true_dist, pred_dist):
+        losses = losses.squeeze(1)
+        
         self.cuml_loss += losses.sum().item()
 
         self.true_dist += true_dist.tolist()
         self.pred_dist += pred_dist.tolist()
-        
+        self.loss_list += losses.tolist()
+
         scorer_fit = (torch.abs((true_dist - pred_dist)/true_dist))\
                         .sum().item()
         
@@ -334,6 +341,7 @@ class ScorerAnalysis:
             self.cuml_pert_loss += losses.sum().item()
             self.true_dist_pert += true_dist.tolist()
             self.pred_dist_pert += pred_dist.tolist()
+            self.loss_list_pert += losses.tolist()
             self.cuml_scorer_fit_pert += scorer_fit
             self.scorer_diff_fit_dict[idx]['perturbed'].append((true_dist.sum(), 
                                                                 pred_dist.sum()))
@@ -344,6 +352,7 @@ class ScorerAnalysis:
             self.cuml_non_pert_loss += losses.sum().item()
             self.true_dist_non_pert += true_dist.tolist()
             self.pred_dist_non_pert += pred_dist.tolist()
+            self.loss_list_non_pert += losses.tolist()
             self.cuml_scorer_fit_non_pert += scorer_fit
             self.scorer_diff_fit_dict[idx]['non_pert'] = (true_dist.sum(), 
                                                           pred_dist.sum())
@@ -362,7 +371,7 @@ class ScorerAnalysis:
         self.num_docs_pert = 0
         self.num_docs_non_pert = 0
 
-
+        self.loss_list = []
         self.true_dist = []
         self.pred_dist = []
 
@@ -370,7 +379,9 @@ class ScorerAnalysis:
         self.true_dist_non_pert = []
         self.pred_dist_pert = []
         self.pred_dist_non_pert = []
-        
+        self.loss_list_pert = []
+        self.loss_list_non_pert = []
+
         self.cuml_pred_dist = 0.
         self.cuml_true_dist = 0.
         
@@ -395,15 +406,41 @@ class ScorerAnalysis:
                 self.cuml_scorer_diff_fit += torch.abs((perturb_pred_score - non_pert_pred_score)/(perturb_true_score - non_pert_true_score)).item()
                 self.scorer_diff_fit_count += 1
 
+        bins = np.array([0, 0.125, 0.25, 0.5, 1, 2, 3, 4] + list(range(10, 110, 10)))
+        idxs = np.digitize(np.array(self.loss_list), bins)
+        loss_digitized = bins[idxs - 1]
+
+        idxs = np.digitize(np.array(self.loss_list_pert), bins)
+        loss_pert_digitized =  bins[idxs - 1]
+
+        idxs = np.digitize(np.array(self.loss_list_non_pert), bins)
+        loss_non_pert_digitized =  bins[idxs - 1]
+
         return {
           f"{self.prefix}/corr_all": kendalltau(self.true_dist, self.pred_dist)[0],
           f"{self.prefix}/corr_pert": kendalltau(self.true_dist_pert, self.pred_dist_pert)[0],
           f"{self.prefix}/corr_non_pert": kendalltau(self.true_dist_non_pert,
                                                      self.pred_dist_non_pert)[0],
 
-          f"{self.prefix}/loss_all": self.cuml_loss / self.num_docs,
-          f"{self.prefix}/loss_pert": self.cuml_pert_loss / self.num_docs_pert,
-          f"{self.prefix}/loss_non_pert": self.cuml_non_pert_loss / self.num_docs_non_pert, 
+          f"{self.prefix}/loss_mean": self.cuml_loss / self.num_docs,
+          f"{self.prefix}/loss_mean_pert": self.cuml_pert_loss / self.num_docs_pert,
+          f"{self.prefix}/loss_mean_non_pert": self.cuml_non_pert_loss / self.num_docs_non_pert, 
+
+          f"{self.prefix}/loss_u1": np.mean(loss_digitized < 1) ,
+          f"{self.prefix}/loss_pert_u1": np.mean(loss_pert_digitized < 1),
+          f"{self.prefix}/loss_non_pert_u1": np.mean(loss_non_pert_digitized < 1),
+
+          f"{self.prefix}/loss_u10": np.mean(loss_digitized < 10) ,
+          f"{self.prefix}/loss_pert_u10": np.mean(loss_pert_digitized < 10),
+          f"{self.prefix}/loss_non_pert_u10": np.mean(loss_non_pert_digitized < 10), 
+
+          f"{self.prefix}/loss_u20": np.mean(loss_digitized < 20) ,
+          f"{self.prefix}/loss_pert_u20": np.mean(loss_pert_digitized < 20),
+          f"{self.prefix}/loss_non_pert_u20": np.mean(loss_non_pert_digitized < 20), 
+
+          f"{self.prefix}/loss_u30": np.mean(loss_digitized < 30) ,
+          f"{self.prefix}/loss_pert_u30": np.mean(loss_pert_digitized < 30),
+          f"{self.prefix}/loss_non_pert_u30": np.mean(loss_non_pert_digitized < 30), 
 
           f"{self.prefix}/scorer_fit_all": self.cuml_scorer_fit_all / self.num_docs,
           f"{self.prefix}/scorer_fit_pert": self.cuml_scorer_fit_pert / self.num_docs_pert,
@@ -693,7 +730,7 @@ def add_args(parser):
                         action='store_true')
 
     parser.add_argument(
-        "--train-score-patience", type=int, default=100,
+        "--train-score-patience", type=int, default=20,
     )
     parser.add_argument(
         "--print-decodings", type=str, default=True,
