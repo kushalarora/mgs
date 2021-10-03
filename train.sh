@@ -13,6 +13,9 @@
 # 2. Load your environment
 # conda activate torch181
 
+
+. ./run_config.sh
+
 get_random_port() {
 	floor=3000;
 	cieling=8000;
@@ -32,22 +35,22 @@ fi
 source ${HOME}/envs/mgs/bin/activate
 
 # 3. Copy your dataset on the compute node
-rsync -avz ./datasets/wikitext103_raw_gpt2bpe.pkl $SLURM_TMPDIR
+rsync -avz ./datasets/wikitext103_raw_gpt2bpe.pkl ${SLURM_TMPDIR}
+
 
 MODEL_NAME=${model_name:="gpt2"}
 loss=${loss:="mle"}
 TPORT=${port:-$(get_random_port)}
 EXP_NAME=${exp_name:="wikipedia103/"}"_${MODEL_NAME}_${loss}"
 OUTPUT_DIR_SUFFIX="${MODEL_NAME}_${loss}_${SLURM_JOB_ID}"
-SAVE_BASE_DIR=${save_dir:-"./results/wikipedia103"}
+SAVE_BASE_DIR=${save_dir:="./results/wikipedia103"}
 SAVE_DIR=${SAVE_BASE_DIR}/${OUTPUT_DIR_SUFFIX}
 if [ -d ${SAVE_DIR} ]; then
 	mkdir -p ${SAVE_DIR}
 fi 
 
-. ./run_config.sh
 
-cmd="python -u seq_level/gpt2/train.py --dataset-path=$SLURM_TMPDIR/wikitext103_raw_gpt2bpe.pkl"
+cmd="python -u seq_level/gpt2/train.py --dataset-path=${SLURM_TMPDIR}/wikitext103_raw_gpt2bpe.pkl"
 
 if [  -n "${wandb}" ] && [ "${wandb}" == "true" ];
 then
@@ -163,6 +166,11 @@ else
 						if [ -n "${scorer_lr}" ]; then
 							cmd+=" --scorer-lr ${scorer_lr} ";
 						fi
+
+						if [ -n "${scorer_dropout}" ]; then
+							cmd+=" --score-network-dropout-ratio ${scorer_dropout} ";
+						fi
+						
         fi
 	else
 		echo "Input Is Error."
@@ -184,8 +192,10 @@ tensorboard --logdir ${TMP_RUN_DIR} --port ${TPORT} --host localhost &
 ssh -N -R ${TPORT}:localhost:${TPORT} login-4 &
 
 
-$cmd
+# $cmd;
 
-if [ -z "${debug}" ]; then
+if [ -z "${debug}" ] || [ "${debug}" == "" ] || [ "${debug}" == "false" ]; then
 	rsync -avz ${TMP_RUN_DIR} ${SAVE_DIR}
 fi
+
+

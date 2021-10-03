@@ -299,8 +299,8 @@ class ScorerAnalysis:
         self.loss_list_pert = []
         self.loss_list_non_pert = []
 
-        self.cuml_scorer_diff_fit = 0.
-        self.scorer_diff_fit_count = 0
+        self.disagreements = 0.
+        self.disagreement_count = 0
         
         self.cuml_pred_dist = 0.
         self.cuml_true_dist = 0.
@@ -403,8 +403,9 @@ class ScorerAnalysis:
                          " are equal.")
                     continue
 
-                self.cuml_scorer_diff_fit += torch.abs((perturb_pred_score - non_pert_pred_score)/(perturb_true_score - non_pert_true_score)).item()
-                self.scorer_diff_fit_count += 1
+                self.disagreements += ((perturb_pred_score - non_pert_pred_score)/
+                                        (perturb_true_score - non_pert_true_score) < 0).item()
+                self.disagreement_count += 1
 
         bins = np.array([0, 0.125, 0.25, 0.5, 1, 2, 3, 4] + list(range(10, 110, 10)))
         idxs = np.digitize(np.array(self.loss_list), bins)
@@ -446,7 +447,7 @@ class ScorerAnalysis:
           f"{self.prefix}/scorer_fit_pert": self.cuml_scorer_fit_pert / self.num_docs_pert,
           f"{self.prefix}/scorer_fit_non_pert": self.cuml_scorer_fit_non_pert / self.num_docs_non_pert,
 
-          f"{self.prefix}/scorer_diff_fit": self.cuml_scorer_diff_fit / self.scorer_diff_fit_count,
+          f"{self.prefix}/disagreements": self.disagreements / self.disagreement_count,
 
           f"{self.prefix}/avg_true_dist_all": self.cuml_true_dist/self.num_docs, 
           f"{self.prefix}/avg_true_dist_pert": self.cuml_true_dist_pert/self.num_docs_pert, 
@@ -730,7 +731,7 @@ def add_args(parser):
                         action='store_true')
 
     parser.add_argument(
-        "--train-score-patience", type=int, default=20,
+        "--train-score-patience", type=int, default=30,
     )
     parser.add_argument(
         "--print-decodings", type=str, default=True,
