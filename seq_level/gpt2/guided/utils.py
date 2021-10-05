@@ -12,6 +12,13 @@ from transformers import GPT2LMHeadModel, GPT2Tokenizer
 
 from seq_level.gpt2.utils import generate_batch
 
+from enum import Enum
+
+class PerturbationType(Enum):
+    ONLY_MLE_GRAD=1
+    MLE_GRAD_W_NOISE=2
+    ONLY_NOISE=3
+
 
 def task_distance(
         target_trim, model_trim, outputs, score_model,
@@ -165,7 +172,98 @@ def mle_grad(model, inp, target, pad, clip_grad_norm=1.0):
     return model, loss_sum
 
 
+def perturb_single(model, model_with_grad, noise, noise_scale, 
+            perturb_type=PerturbationType.ONLY_MLE_GRAD, rng_state=None):
+    model_ = deepcopy(model)
+    noise_mag = 0
+    eps_eps = 0
+    eps_nabla = 0
+    nabla_nabla = 0
+    device = model_.device
+
+    with RNG(rng_state, device) as (rng, rng_state):
+        for param, (name, param_with_grad) in zip(model_.parameters(), 
+                                                model_with_grad.named_parameters()):
+            g = -param_with_grad.grad.data
+
+            if noise_scale == 'uniform':
+                noise_ = noise * torch.randn_like(param.data) * (g.abs().sum() / g.numel())
+            else:
+                noise_ = noise * torch.randn_like(param.data)
+
+            # Choose the mixture component (assume 0.5 mixture proportion)
+            if perturb_type == PerturbationType.ONLY_NOISE:
+                epsilon = noise_
+            
+            elif perturb_type == PerturbationType.ONLY_MLE_GRAD:
+                epsilon = g
+                noise_ = torch.tensor([0])
+
+            elif perturb_type == PerturbationType.MLE_GRAD_W_NOISE:
+                epsilon = g + noise_
+
+            else:
+                raise ValueError(f"perturb_type: {perturb_type} not recognized.")
+
+            noise_mag += torch.sqrt((noise_ ** 2).sum()).item()
+
+            eps_eps += (epsilon.data.view(-1) * epsilon.data.view(-1)).sum()
+            eps_nabla += (g.view(-1) * epsilon.data.view(-1)).sum()
+            nabla_nabla += (g.view(-1) * g.view(-1)).sum()
+            param.data = param.data + epsilon
+
+        q = (0.5 * torch.exp(-0.5 * eps_eps) + 
+                0.5 * torch.exp(-0.5 * eps_eps + eps_nabla - 0.5 * nabla_nabla))
+    return model_, torch.log(q), noise_mag, rng_state
+
+
 def perturb(
+        model, model_with_grad, num_samples, noise, noise_scale,
+        zero_dist_only=False, mle_dist_only=False, include_mle_gradient=False,
+):
+    rng_states = []
+    models = []
+    log_rhos = []
+    noise_magnitudes = []  # diagnostic metric
+    perturb_types = []
+
+    if include_mle_gradient:
+        perturb_type = PerturbationType.ONLY_MLE_GRAD
+        model_, q, noise_mag, _ = perturb_single(model, model_with_grad,
+                                    noise, noise_scale, perturb_type=perturb_type)
+
+        models.append(model_)
+        log_rhos.append(q)
+        noise_magnitudes.append(noise_mag)
+        rng_states.append(None)
+        perturb_types.append(perturb_type)
+
+    n = num_samples
+    for i in range(n):
+        if zero_dist_only:
+            perturb_type = PerturbationType.ONLY_NOISE
+        elif mle_dist_only:
+            perturb_type = PerturbationType.MLE_GRAD_W_NOISE
+        else:
+            perturb_type = PerturbationType.MLE_GRAD_W_NOISE \
+                            if i % 2 == 0 else \
+                                PerturbationType.ONLY_NOISE
+
+        model_, q, noise_mag, rng_state = perturb_single(model, model_with_grad, 
+                                                         noise, noise_scale, 
+                                                         perturb_type=perturb_type)
+
+        models.append(model_)
+        log_rhos.append(q)
+        noise_magnitudes.append(noise_mag)
+        rng_states.append(rng_state)
+        perturb_types.append(perturb_type)
+
+    log_rhos = torch.stack(log_rhos).cpu()
+    return models, log_rhos, noise_magnitudes, rng_states, perturb_types
+
+
+def perturb_backup(
         model, model_with_grad, num_samples, noise, noise_scale,
         zero_dist_only=False, mle_dist_only=False, include_mle_gradient=False,
 ):
@@ -289,7 +387,7 @@ def heuristic_perturb(
                 break
 
     log_rhos = torch.stack(log_rhos).cpu()
-    return models, log_rhos, noise_magnitudes
+    return models, log_rhos, noise_magnitudes, [], []
 
 
 def parameter_weighted_average(model, perturbed_models, log_weights):
@@ -314,6 +412,7 @@ def compute_weight(distance, perturbed_distances, log_rhos, beta):
     log_ws = torch.log_softmax(ws, 0)
     return log_ws
 
+
 def get_model_id(model):
     return hashlib.sha1(next(model.parameters()).detach().cpu().numpy()).hexdigest()
 
@@ -329,7 +428,6 @@ def update(model, update_directions, optimizer, clip_grad_norm=1.0):
     return get_model_id(model)
 
 
-
 def load_model(args, device):
     tokenizer = GPT2Tokenizer.from_pretrained("gpt2", cache_dir=args.cache_dir)
     if args.model_load_dir:
@@ -343,6 +441,7 @@ def load_model(args, device):
 
 class GPT2Wrapper(GPT2LMHeadModel):
     pass
+
 
 class RNG(object):
     def __init__(self, rng_state=None, device=None):
@@ -360,6 +459,7 @@ class RNG(object):
     def __exit__(self, type, value, traceback):
         self.rng.manual_seed(self.current_rng_state)
         return True
+
 
 class TimerObject(object):
     def __init__(self):
@@ -384,6 +484,7 @@ class TimerObject(object):
 
     def __exit__(self, type, value, traceback):
         pass
+
 
 class TimerContext(object):
     _instance = None

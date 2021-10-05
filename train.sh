@@ -101,9 +101,14 @@ else
             cmd+=" --efficient  --log-scoring-function  --on-device"
 						if [ -n "${debug}" ] && [ "${debug}" == "true" ];
 						then
-							cmd+=' --score-network-epochs 100 --aggregated-data-size 40 --retrain-score-network-every 100 --max-buffer-size 80 --on-device'
-							# cmd+=' --score-network-epochs 50 --aggregated-data-size 300 --retrain-score-network-every 200 --max-buffer-size 600 '
+							cmd+=' --score-network-epochs 100 --aggregated-data-size 40 --retrain-score-network-every 100 --max-buffer-size 300 --on-device'
+							# cmd+=' --score-network-epochs 50 --aggregated-data-size 200 --retrain-score-network-every 200 --max-buffer-size 2000 --on-device'
 						fi
+
+						if [ -n "${init_scorer}" ] && [ "${init_scorer}" == "true" ];
+						then 
+							cmd+=' --initialize-score-network '
+						fi 
 
 						if [ -n "${use_agg_data}" ] && [ "${use_agg_data}" == "true" ];
 						then
@@ -147,7 +152,7 @@ else
 
 						if [ -n "${agg_size}" ];
 						then
-							max_buffer_size=$(expr ${agg_size} \* 2)
+							max_buffer_size=$(expr ${agg_size} \* 6)
 							cmd+=" --aggregated-data-size ${agg_size} --max-buffer-size ${max_buffer_size} "
 						fi
 
@@ -192,7 +197,7 @@ tensorboard --logdir ${TMP_RUN_DIR} --port ${TPORT} --host localhost &
 ssh -N -R ${TPORT}:localhost:${TPORT} login-4 &
 
 
-# $cmd;
+$cmd;
 
 if [ -z "${debug}" ] || [ "${debug}" == "" ] || [ "${debug}" == "false" ]; then
 	rsync -avz ${TMP_RUN_DIR} ${SAVE_DIR}

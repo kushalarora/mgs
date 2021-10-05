@@ -24,7 +24,7 @@ then
     efficient="true"
     save_agg_data="true"
     save_score_network="true"
-    
+    init_scorer="true"
     if [ -n "${agg_size}" ] && [ "${agg_size}" != "" ];
     then
       wandb_run+="-${agg_size}"
@@ -32,7 +32,7 @@ then
     
     if [[ "${run_type}" =~ .*use_agg_data.* ]];
     then
-      agg_size=${agg_size:=4000}
+      agg_size=${agg_size:=2000}
       wandb_run+="-use-aggregated-${agg_size}"
       use_agg_data="true"
       agg_data=${agg_data:="datasets/"${agg_size}"_buffer.pkl"}
@@ -40,7 +40,7 @@ then
 
     if [[ "${run_type}" =~ .*use_score_network.* ]];
     then
-      agg_size=${agg_size:=4000}
+      agg_size=${agg_size:=2000}
       wandb_run+="-use-score-function"
       use_score_network="true"
       score_network=${score_network:="datasets/"${agg_size}"_score_network.pkl"}

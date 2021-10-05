@@ -3,7 +3,7 @@ from copy import deepcopy
 from pprint import pformat
 from scipy.stats import kendalltau
 from timeit import default_timer as timer
-
+from enum import Enum
 
 import hashlib
 import logging
@@ -28,6 +28,10 @@ def _hash_model(model):
     return hashlib.sha1(next(model.parameters()).detach().cpu().numpy()).hexdigest()
 
 MODEL_ID = None
+
+class InstanceType(Enum):
+    PERTURBED=1
+    NON_PERTURBED=2
 
 class RingBuffer:
     def __init__(self, max_size=1000, persistence='none', 
@@ -60,7 +64,7 @@ class RingBuffer:
         return len(self.train_queue)
 
     def append(self, idx, type, batch_id, batch, model, sequences, 
-                distances, rng_state=None, apply_to_mle_grad=None):
+                distances, rng_state=None, perturb_type=None):
 
         if idx not in self.valid_idxs and idx not in self.train_idxs:
             if random.random() > 0.9:
@@ -135,7 +139,7 @@ class RingBuffer:
 
         queue.append((idx, type, batch_key, model_key, 
                         sequences_key, distances, rng_state, 
-                        apply_to_mle_grad))
+                        perturb_type))
 
     def get_iterators(self, shuffle=True):
         def _batch_generator(iterable, shuffle=True):
@@ -143,7 +147,7 @@ class RingBuffer:
                 iterable = random.sample(iterable, len(iterable))
 
             for (idx, type, batch_key, model_key, sequences_key, 
-                    distances, rng_state, apply_to_mle_grad) in iterable:
+                    distances, rng_state, perturb_type) in iterable:
 
                 batch = self.db[batch_key]
                 sequences = self.db[sequences_key]
@@ -155,7 +159,7 @@ class RingBuffer:
                         f"Model: {model_key}.")
                     continue
                 yield (idx, type, batch, model, sequences, 
-                        distances, rng_state, apply_to_mle_grad)
+                        distances, rng_state, perturb_type)
 
         return (_batch_generator(self.train_queue, shuffle=shuffle), 
                     _batch_generator(self.valid_queue, shuffle=False))
@@ -190,23 +194,34 @@ def accumulate_scorer_training_data(step, batch_id, batch, buffer, model,
                                             device, args, average_distance=False)
 
       idx = f'accum_{step}'
-      buffer.append(idx, 'current', batch_id, batch,
+      buffer.append(idx, InstanceType.NON_PERTURBED, batch_id, batch,
                      model, cur_decodings, cur_distances)
 
       # Get the current MLE gradients
-      model.train()
-      per_model, rng_state, apply_to_mle_grad = perturb(model, batch, 
-                                                        step, tokenizer, 
-                                                        args, device=device)
 
-      _, per_decodings, per_distances = ggs_utils.decode_and_distance(per_model,
-                                          tokenizer, batch, score_model, max_length,
-                                          device, args, average_distance=False)
+      model_ = deepcopy(model)
+      inp, target = batch[:, :-1], batch[:, 1:]
+      model_with_grad, _ = ggs_utils.mle_grad(model_, 
+                            inp, target, tokenizer.pad_token_id, 
+                            args.max_grad_norm)
 
-      buffer.append(idx, 'perturbed', batch_id, batch, model, 
-                      per_decodings, per_distances, 
-                      rng_state=rng_state, 
-                      apply_to_mle_grad=apply_to_mle_grad)
+      perturbed_models, _, _, rng_states, perturb_types = \
+            ggs_utils.perturb(model, model_with_grad, args.ggs_num_samples, 
+                        args.ggs_noise, noise_scale=args.noise_scale,
+                        zero_dist_only=args.zero_dist_only,
+                        mle_dist_only=args.mle_dist_only,
+                        include_mle_gradient=args.include_mle_gradient)
+
+      for i, (p_model, rng_state, perturb_type) in \
+            enumerate(zip(perturbed_models, rng_states, perturb_types)):
+        _, per_decodings, per_distances = ggs_utils.decode_and_distance(p_model,
+                                            tokenizer, batch, score_model, max_length,
+                                            device, args, average_distance=False)
+        # idx = f'accum_perturb_{step}_{i}'
+        idx = f'accum_{step}'
+        buffer.append(idx, InstanceType.PERTURBED, batch_id, batch, p_model, 
+                        per_decodings, per_distances, rng_state=rng_state,
+                        perturb_type=perturb_type)
 
       end_time = timer()
       avg_time = ctxt_timer.timeit(start_time, end_time)
@@ -336,7 +351,7 @@ class ScorerAnalysis:
         
         self.cuml_pred_dist += pred_dist.sum().item()
         self.cuml_true_dist += true_dist.sum().item()
-        if type == "perturbed":
+        if type == InstanceType.PERTURBED:
             self.num_docs_pert += batch.size(0)
             self.cuml_pert_loss += losses.sum().item()
             self.true_dist_pert += true_dist.tolist()
@@ -449,13 +464,13 @@ class ScorerAnalysis:
 
           f"{self.prefix}/disagreements": self.disagreements / self.disagreement_count,
 
-          f"{self.prefix}/avg_true_dist_all": self.cuml_true_dist/self.num_docs, 
-          f"{self.prefix}/avg_true_dist_pert": self.cuml_true_dist_pert/self.num_docs_pert, 
-          f"{self.prefix}/avg_true_dist_non_pert": self.cuml_true_dist_non_pert/self.num_docs_non_pert,
+          f"{self.prefix}/true_dist_mean": self.cuml_true_dist/self.num_docs, 
+          f"{self.prefix}/true_dist_pert_mean": self.cuml_true_dist_pert/self.num_docs_pert, 
+          f"{self.prefix}/true_dist_non_pert_mean": self.cuml_true_dist_non_pert/self.num_docs_non_pert,
 
-          f"{self.prefix}/avg_pred_dist_all":self.cuml_pred_dist/self.num_docs, 
-          f"{self.prefix}/avg_pred_dist_pert":self.cuml_pred_dist_pert/self.num_docs_pert,
-          f"{self.prefix}/avg_pred_dist_non_pert":self.cuml_pred_dist_non_pert/self.num_docs_non_pert, 
+          f"{self.prefix}/pred_dist_mean":self.cuml_pred_dist/self.num_docs, 
+          f"{self.prefix}/pred_dist_pert_mean":self.cuml_pred_dist_pert/self.num_docs_pert,
+          f"{self.prefix}/pred_dist_non_pert_mean":self.cuml_pred_dist_non_pert/self.num_docs_non_pert, 
         }
 
 def validate_score_network(valid_iter, score_network, tokenizer, device, args):
@@ -464,12 +479,17 @@ def validate_score_network(valid_iter, score_network, tokenizer, device, args):
     valid_scorer_analysis = ScorerAnalysis('valid')
     score_network.eval()
     for step, (idx, type, batch, model, sequences, distances,
-                rng_state, apply_to_mle_grad) in enumerate(valid_iter):
+                rng_state, perturb_type) in enumerate(valid_iter):
 
-        if type == "perturbed":
-            model, _, _ = perturb(model, batch, idx, tokenizer, args, 
-                                  device=device, rng_state=rng_state,
-                                  apply_to_mle_grad=apply_to_mle_grad)
+        if type == InstanceType.PERTURBED:
+            model_ = deepcopy(model)
+            inp, target = batch[:, :-1], batch[:, 1:]
+            model_with_grad, _ = ggs_utils.mle_grad(model_, inp, target, 
+                                    tokenizer.pad_token_id, args.max_grad_norm)
+
+            model, _, _, _ = ggs_utils.perturb_single(model, model_with_grad, 
+                                args.ggs_noise, noise_scale=args.noise_scale,
+                                perturb_type=perturb_type, rng_state=rng_state)
 
         losses, pred_distances = get_train_score_network_loss(idx, 
                                         type, model, batch, distances, sequences,
@@ -521,6 +541,7 @@ def train_score_network(buffers, score_network, tokenizer, device,
     # valid_loss, valid_info_dict = validate_score_network(
     #                                 valid_iterator, score_network,
     #                                 tokenizer, device, args)
+
     for epoch in range(epochs):
         score_network.train()
         train_scorer_analysis = ScorerAnalysis('train')
@@ -530,13 +551,22 @@ def train_score_network(buffers, score_network, tokenizer, device,
         
         with timer_context('train_score_network_time') as ctxt_timer:
             start_time = timer()
-            for step, (idx, type, batch, model, sequences, distances, rng_state,
-                            apply_to_mle_grad) in enumerate(train_iterator):
+            for step, (idx, type, batch, model, sequences, distances,
+                         rng_state, perturb_type) in enumerate(train_iterator):
 
                 phi_optimizer.zero_grad()
-                if type == "perturbed":
-                    model, _, _ = perturb(model, batch, idx, tokenizer, args, 
-                                    device=device, rng_state=rng_state, apply_to_mle_grad=apply_to_mle_grad)
+                if type == InstanceType.PERTURBED:
+                    inp, target = batch[:, :-1], batch[:, 1:]
+                    model_ = deepcopy(model)
+                    model_with_grad, _ = ggs_utils.mle_grad(model_, inp, target, 
+                                            tokenizer.pad_token_id, args.max_grad_norm)
+
+                    model, _, _, _ = ggs_utils.perturb_single(model, 
+                                        model_with_grad, 
+                                        args.ggs_noise, 
+                                        noise_scale=args.noise_scale,
+                                        perturb_type=perturb_type, 
+                                        rng_state=rng_state)
         
                 losses, pred_distances = get_train_score_network_loss(idx, 
                                                 type, model, batch, distances, sequences,
@@ -693,7 +723,7 @@ def add_args(parser):
     parser.add_argument('--include-mle-gradient', action='store_true')
 
     parser.add_argument(
-        "--max-buffer-size", type=int, default=4000,
+        "--max-buffer-size", type=int, default=20000,
     )
 
     parser.add_argument(
@@ -748,5 +778,8 @@ def add_args(parser):
         "--scorer-lr", type=float, default=5e-4,
     )
 
+    parser.add_argument(
+        "--initialize-score-network", action='store_true',
+    )
     score_network_utils.add_args(parser)
     return parser
