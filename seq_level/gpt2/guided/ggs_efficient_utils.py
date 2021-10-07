@@ -534,8 +534,10 @@ def train_score_network(buffers, score_network, tokenizer, device,
     score_network = score_network.to(device=device)
 
     phi_optimizer = optim.AdamW(score_network.parameters(), lr=args.scorer_lr)
-    scheduler = optim.lr_scheduler.StepLR(phi_optimizer, step_size=20, gamma=0.1, verbose=True)
-    # scheduler = optim.lr_scheduler.ReduceLROnPlateau(phi_optimizer, 'min', patience=3, verbose=True)
+    # scheduler = optim.lr_scheduler.StepLR(phi_optimizer, step_size=10, gamma=0.5, verbose=True)
+    # scheduler = optim.lr_scheduler.ExponentialLR(phi_optimizer, gamma=0.9)
+
+    # scheduler = optim.lr_scheduler.ReduceLROnPlateau(phi_optimizer, 'min', patience=10, verbose=True)
 
     # _, valid_iterator = buffers.get_iterators()
     # valid_loss, valid_info_dict = validate_score_network(
@@ -561,12 +563,9 @@ def train_score_network(buffers, score_network, tokenizer, device,
                     model_with_grad, _ = ggs_utils.mle_grad(model_, inp, target, 
                                             tokenizer.pad_token_id, args.max_grad_norm)
 
-                    model, _, _, _ = ggs_utils.perturb_single(model, 
-                                        model_with_grad, 
-                                        args.ggs_noise, 
-                                        noise_scale=args.noise_scale,
-                                        perturb_type=perturb_type, 
-                                        rng_state=rng_state)
+                    model, _, _, _ = ggs_utils.perturb_single(model, model_with_grad, 
+                                        args.ggs_noise, noise_scale=args.noise_scale,
+                                        perturb_type=perturb_type, rng_state=rng_state)
         
                 losses, pred_distances = get_train_score_network_loss(idx, 
                                                 type, model, batch, distances, sequences,
@@ -602,15 +601,12 @@ def train_score_network(buffers, score_network, tokenizer, device,
             print(pformat(train_info_dict))
 
             ctxt_timer.timeit(start_time, end_time)
-        
         with timer_context('validate_score_network_time') as ctxt_timer:
             start_time = timer()
             train_loss = cuml_train_loss / num_docs
             valid_loss, valid_info_dict = validate_score_network(
                                             valid_iterator, score_network,
                                             tokenizer, device, args)
-            # scheduler.step(valid_loss)
-            scheduler.step()
 
             if min_valid_loss < valid_loss:
                 patience_counter += 1
@@ -619,6 +615,8 @@ def train_score_network(buffers, score_network, tokenizer, device,
                 min_valid_loss = valid_loss
                 best_score_network = deepcopy(score_network)
 
+            # scheduler.step(valid_loss)
+            # scheduler.step()
             print(pformat(valid_info_dict))
             if patience_counter > args.train_score_patience:
                 logging.info(f"Stopping Early at epoch: {epoch} with best validation loss: {min_valid_loss}")

@@ -180,16 +180,17 @@ def perturb_single(model, model_with_grad, noise, noise_scale,
     eps_nabla = 0
     nabla_nabla = 0
     device = model_.device
-
+    q = torch.tensor([0])
     with RNG(rng_state, device) as (rng, rng_state):
         for param, (name, param_with_grad) in zip(model_.parameters(), 
                                                 model_with_grad.named_parameters()):
             g = -param_with_grad.grad.data
 
             if noise_scale == 'uniform':
-                noise_ = noise * torch.randn_like(param.data) * (g.abs().sum() / g.numel())
+                noise_ = noise * torch.randn(param.size(), generator=rng, device=device) * \
+                                 (g.abs().sum() / g.numel())
             else:
-                noise_ = noise * torch.randn_like(param.data)
+                noise_ = noise * torch.randn(param.size(), generator=rng, device=device)
 
             # Choose the mixture component (assume 0.5 mixture proportion)
             if perturb_type == PerturbationType.ONLY_NOISE:
@@ -212,7 +213,7 @@ def perturb_single(model, model_with_grad, noise, noise_scale,
             nabla_nabla += (g.view(-1) * g.view(-1)).sum()
             param.data = param.data + epsilon
 
-        q = (0.5 * torch.exp(-0.5 * eps_eps) + 
+        q += (0.5 * torch.exp(-0.5 * eps_eps) + 
                 0.5 * torch.exp(-0.5 * eps_eps + eps_nabla - 0.5 * nabla_nabla))
     return model_, torch.log(q), noise_mag, rng_state
 

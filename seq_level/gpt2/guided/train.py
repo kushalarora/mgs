@@ -31,7 +31,7 @@ import scipy.stats as stats
 
 timer_context = ggs_utils.TimerContext()
 
-def original_mgs_scoring_function(buffer, is_target_function, model, 
+def original_mgs_scoring_function(model, 
         tokenizer, batch, score_model, max_length, device,  args, prefix):
     decoded = defaultdict(list)
     bpes_curr, outputs, distance_curr = ggs_utils.decode_and_distance(
@@ -50,7 +50,7 @@ def original_mgs_scoring_function(buffer, is_target_function, model,
 
 def MGS(batch_id, batch, model, score_model, tokenizer, args, device, metrics, 
         optimizer, scoring_function=None, target_scoring_func=None, 
-        use_learned_scoring_func=False):
+        use_learned_scoring_func=False, buffer=None):
     """
     MGS algorithm parameterized to work in original as well as efficient mode.
     """
@@ -68,7 +68,7 @@ def MGS(batch_id, batch, model, score_model, tokenizer, args, device, metrics,
             model, tokenizer, batch, score_model, max_length, device, args, prefix='original'
         )
         
-        if not use_learned_scoring_func:
+        if args.efficient and not use_learned_scoring_func:
             idx = f'mgs_{args.log_step}'
             buffer.append(idx, InstanceType.NON_PERTURBED, batch_id, batch,
                             model, output_curr, distance_curr)
@@ -133,7 +133,7 @@ def MGS(batch_id, batch, model, score_model, tokenizer, args, device, metrics,
                                                     batch, score_model, max_length, 
                                                     device, args, prefix=f'perturb_{i}')
 
-            if not use_learned_scoring_func:
+            if args.efficient and not use_learned_scoring_func:
                 # idx = f'mgs_perturb_{args.log_step}_{i}'
                 idx = f'mgs_{args.log_step}'
                 buffer.append(idx, InstanceType.PERTURBED, batch_id, batch, 
@@ -195,8 +195,8 @@ def MGS(batch_id, batch, model, score_model, tokenizer, args, device, metrics,
     return decoded
 
 
-def get_learning_function(buffer, score_network, step, args, total_num_batches):
-    scoring_function = partial(original_mgs_scoring_function, buffer, False)
+def get_learning_function(score_network, step, args, total_num_batches):
+    scoring_function = original_mgs_scoring_function
     target_scoring_func = partial(dagger_ggs_utils.dagger_mgs_scoring_function, score_network)
 
     use_learned_scoring_function = args.use_learned_scoring_function
@@ -214,7 +214,7 @@ def get_learning_function(buffer, score_network, step, args, total_num_batches):
 
     if use_learned_scoring_function:
         scoring_function = partial(dagger_ggs_utils.dagger_mgs_scoring_function, score_network)
-        target_scoring_func = partial(original_mgs_scoring_function, buffer, False)
+        target_scoring_func = original_mgs_scoring_function
 
     return scoring_function, target_scoring_func, use_learned_scoring_function
 
@@ -316,7 +316,7 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
                 train_step_start = timer()
 
                 scoring_function, target_scoring_func, use_learned_scoring_func = \
-                    get_learning_function(buffer, score_network, step, args, total_num_batches)
+                    get_learning_function(score_network, step, args, total_num_batches)
 
                 if args.efficient:
                     # if dagger_ggs_utils.shall_accumulate_scorer_training_data(step, total_num_batches, args):
@@ -358,6 +358,7 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
                                 scoring_function=scoring_function,
                                 target_scoring_func=target_scoring_func,
                                 use_learned_scoring_func=use_learned_scoring_func,
+                                buffer=buffer,
                                 )
                     mgs_end_time = timer()
                     ctxt_timer.timeit(mgs_start_time, mgs_end_time)

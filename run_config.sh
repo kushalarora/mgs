@@ -32,7 +32,7 @@ then
     
     if [[ "${run_type}" =~ .*use_agg_data.* ]];
     then
-      agg_size=${agg_size:=2000}
+      agg_size=${agg_size:=500}
       wandb_run+="-use-aggregated-${agg_size}"
       use_agg_data="true"
       agg_data=${agg_data:="datasets/"${agg_size}"_buffer.pkl"}
