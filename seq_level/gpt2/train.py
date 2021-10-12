@@ -285,7 +285,7 @@ def main():
     parser.add_argument('--train-batch-size', type=int, default=1)
     parser.add_argument('--eval-batch-size', type=int, default=1)
     parser.add_argument('--eval-context-length', type=int, default=10)
-    parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--seed', type=int, default=None)
     parser.add_argument('--eval-num-steps', type=int, default=-1)
     parser.add_argument('--num-train-epochs', type=int, default=100)
     parser.add_argument('--no-checkpoint', action='store_true')

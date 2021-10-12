@@ -141,7 +141,7 @@ class RingBuffer:
                         sequences_key, distances, rng_state, 
                         perturb_type))
 
-    def get_iterators(self, shuffle=True):
+    def get_iterators(self, args, shuffle=True):
         def _batch_generator(iterable, shuffle=True):
             if shuffle:
                 iterable = random.sample(iterable, len(iterable))
@@ -153,16 +153,82 @@ class RingBuffer:
                 sequences = self.db[sequences_key]
                 model = self.db[model_key]
 
+                if type == InstanceType.PERTURBED:
+                    model_ = deepcopy(model)
+                    inp, target = batch[:, :-1], batch[:, 1:]
+                    model_with_grad, _ = ggs_utils.mle_grad(model_, inp, target, 
+                                            args.pad_token_id, args.max_grad_norm)
+
+                    model, _, _, _ = ggs_utils.perturb_single(model, model_with_grad, 
+                                        args.ggs_noise, noise_scale=args.noise_scale,
+                                        perturb_type=perturb_type, rng_state=rng_state)
+                
                 if distances.size(0) != batch.size(0):
                     logging.error(
                         f"Distance: {distances.size(0)}, Batch: ({batch.size()}), {batch_key} Sequence: {sequences_key}" + \
                         f"Model: {model_key}.")
                     continue
                 yield (idx, type, batch, model, sequences, 
-                        distances, rng_state, perturb_type)
+                        distances, rng_state, perturb_type, model_with_grad)
 
         return (_batch_generator(self.train_queue, shuffle=shuffle), 
                     _batch_generator(self.valid_queue, shuffle=False))
+
+    def get_iterators_v2(self, args, shuffle=True):
+        def _batch_generator_v2(iterable, shuffle=True):
+            idx2model_info = {}
+            for (idx, type, batch_key, model_key, sequences_key, 
+                    distances, rng_state, perturb_type) in iterable:
+                if idx not in idx2model_info:
+                    idx2model_info[idx] = {
+                        'non_pert': None,
+                        'pert': [],
+                        'batch_key': batch_key,
+                    }
+
+                assert idx2model_info[idx]['batch_key'] == batch_key
+                
+                entry = (model_key, sequences_key, distances, rng_state, perturb_type)
+                if type == InstanceType.NON_PERTURBED:
+                    idx2model_info[idx]['non_pert'] = entry
+                else:
+                    idx2model_info[idx]['pert'].append(entry)
+            
+            items = idx2model_info.items()
+            if shuffle:
+                items = random.sample(items, len(idx2model_info))
+            
+            idx2model = {}
+            for idx, data in items:
+                idx2model = {}
+                batch = self.db[data['batch_key']]
+                idx2model['batch'] = batch
+                idx2model['idx'] = idx
+
+                model_key_np, sequences_key_np, distances_np, _, _ = data['non_pert']
+                model_np = self.db[model_key_np]
+                sequence_np = self.db[sequences_key_np]
+                idx2model['non_pert'] = (model_np, sequence_np, distances_np)
+
+                idx2model['pert'] = []
+                for model_key_p, sequences_key_p, distances_p, rng_state, perturb_type in data['pert']:
+                    model_p = self.db[model_key_np]
+                    sequence_p = self.db[sequences_key_np]
+                    model_ = deepcopy(model_p)
+                    inp, target = batch[:, :-1], batch[:, 1:]
+                    model_with_grad, _ = ggs_utils.mle_grad(model_, inp, target, 
+                                            args.pad_token_id, args.max_grad_norm)
+
+                    model_p, _, _, _ = ggs_utils.perturb_single(model_p, model_with_grad, 
+                                        args.ggs_noise, noise_scale=args.noise_scale,
+                                        perturb_type=perturb_type, rng_state=rng_state)
+
+                    entry = (model_p, sequence_p, distances_p, model_with_grad)
+                    idx2model['pert'].append(entry)
+                yield (idx, idx2model)
+
+        return (_batch_generator_v2(self.train_queue, shuffle=False), 
+                 _batch_generator_v2(self.valid_queue, shuffle=False))
 
 
 def accumulate_scorer_training_data(step, batch_id, batch, buffer, model, 
@@ -202,7 +268,7 @@ def accumulate_scorer_training_data(step, batch_id, batch, buffer, model,
       model_ = deepcopy(model)
       inp, target = batch[:, :-1], batch[:, 1:]
       model_with_grad, _ = ggs_utils.mle_grad(model_, 
-                            inp, target, tokenizer.pad_token_id, 
+                            inp, target, args.pad_token_id, 
                             args.max_grad_norm)
 
       perturbed_models, _, _, rng_states, perturb_types = \
@@ -237,7 +303,7 @@ def perturb(model, batch, step, tokenizer, args, device=None,
     inp, target = batch[:, :-1], batch[:, 1:]
 
     model_with_grad, _ = ggs_utils.mle_grad(per_model, inp, target, 
-                              tokenizer.pad_token_id, args.max_grad_norm)
+                              args.pad_token_id, args.max_grad_norm)
 
     model_with_grad_param_dict = dict(model_with_grad.named_parameters())
 
@@ -265,26 +331,52 @@ def perturb(model, batch, step, tokenizer, args, device=None,
     return per_model, rng_state, apply_to_mle_grad
 
 
-def get_train_score_network_loss(idx, type, model, batch, distances, sequences,
-                                      score_network, tokenizer, device, args):
-    model = model.to(device=device)
-    model.eval()
+def calculate_scorer_loss(data, loss_func_type='mse'):
+    loss = 0.
+    if loss_func_type == 'mse':
+        for (dist, pred_dist, _) in data:
+            loss += F.mse_loss(
+                        pred_dist,
+                        dist.view(-1, 1),
+                        reduction='none',)
+        loss /= len(data)
+    return loss
 
-    batch = batch.to(device=device)
+def get_train_score_network_loss(idx, data,
+        score_network, tokenizer, device, args):
 
-    outputs = score_network(model, batch, predictions=sequences)
+    assert idx == data['idx']
 
-    distances = distances.to(device=device)
-    if distances.size(0) != outputs.size(0):
-        logging.error(f"Batch: ({idx} {type} {batch.size()}) != Distance {distances.size()}")
-        return -1.0
+    dists_and_preds = []
+    preds = {}
+    batch = data['batch']
+    if not args.on_device:
+        batch = batch.to(device=device)
 
-    losses = F.mse_loss(
-        outputs,
-        distances.view(-1, 1),
-        reduction='none',
-    )
-    return losses, outputs
+    model_p, sequences_p, distances_p = data['non_pert']
+    if not args.on_device:
+        model_p = model_p.to(device=device)
+        sequences_p = sequences_p.to(device)
+        distances_p = distances_p.to(device)
+    
+    model_p.eval()
+    pred_dist_p = score_network(model_p, batch, 
+                                predictions=sequences_p)
+    dists_and_preds.append((distances_p, pred_dist_p, InstanceType.NON_PERTURBED))
+
+    for model_np, sequences_np, distances_np, model_w_grad_np in data['pert']:
+        if not args.on_device:
+            model_np = model_np.to(device=device)
+            sequences_np = sequences_np.to(device)
+            distances_np = distances_np.to(device)
+        
+        model_np.eval()
+        pred_dist_np = score_network(model_np, batch, 
+                                     predictions=sequences_np)
+        dists_and_preds.append((distances_np, pred_dist_np, InstanceType.PERTURBED))
+
+    losses = calculate_scorer_loss(dists_and_preds, args.scorer_loss_func)
+    return losses, dists_and_preds
 
 class ScorerAnalysis:
     def __init__(self, prefix):
@@ -315,6 +407,7 @@ class ScorerAnalysis:
         self.loss_list_non_pert = []
 
         self.disagreements = 0.
+        self.mean_disagreement = 0.
         self.disagreement_count = 0
         
         self.cuml_pred_dist = 0.
@@ -327,10 +420,9 @@ class ScorerAnalysis:
 
         self.prefix = prefix
 
-    def __call__(self, idx, type, batch, 
-                 losses, true_dist, pred_dist):
+    def __call__(self, idx, type, losses, true_dist, pred_dist):
         losses = losses.squeeze(1)
-        
+        batch_size = losses.size(0)
         self.cuml_loss += losses.sum().item()
 
         self.true_dist += true_dist.tolist()
@@ -341,7 +433,7 @@ class ScorerAnalysis:
                         .sum().item()
         
         self.cuml_scorer_fit_all += scorer_fit
-        self.num_docs += batch.size(0)
+        self.num_docs += batch_size
 
         if idx not in self.scorer_diff_fit_dict:
             self.scorer_diff_fit_dict[idx] = {
@@ -352,7 +444,7 @@ class ScorerAnalysis:
         self.cuml_pred_dist += pred_dist.sum().item()
         self.cuml_true_dist += true_dist.sum().item()
         if type == InstanceType.PERTURBED:
-            self.num_docs_pert += batch.size(0)
+            self.num_docs_pert += batch_size
             self.cuml_pert_loss += losses.sum().item()
             self.true_dist_pert += true_dist.tolist()
             self.pred_dist_pert += pred_dist.tolist()
@@ -363,7 +455,7 @@ class ScorerAnalysis:
             self.cuml_pred_dist_pert += pred_dist.sum().item()
             self.cuml_true_dist_pert += true_dist.sum().item()
         else:
-            self.num_docs_non_pert += batch.size(0)
+            self.num_docs_non_pert += batch_size
             self.cuml_non_pert_loss += losses.sum().item()
             self.true_dist_non_pert += true_dist.tolist()
             self.pred_dist_non_pert += pred_dist.tolist()
@@ -418,8 +510,10 @@ class ScorerAnalysis:
                          " are equal.")
                     continue
 
-                self.disagreements += ((perturb_pred_score - non_pert_pred_score)/
-                                        (perturb_true_score - non_pert_true_score) < 0).item()
+                pred_diff = perturb_pred_score - non_pert_pred_score
+                true_diff = perturb_true_score - non_pert_true_score
+                self.disagreements += (pred_diff/true_diff < 0).item()
+                self.mean_disagreement += torch.abs((pred_diff - true_diff)/true_diff).item()
                 self.disagreement_count += 1
 
         bins = np.array([0, 0.125, 0.25, 0.5, 1, 2, 3, 4] + list(range(10, 110, 10)))
@@ -463,6 +557,7 @@ class ScorerAnalysis:
           f"{self.prefix}/scorer_fit_non_pert": self.cuml_scorer_fit_non_pert / self.num_docs_non_pert,
 
           f"{self.prefix}/disagreements": self.disagreements / self.disagreement_count,
+          f"{self.prefix}/mean_disagreements": self.mean_disagreement / self.disagreement_count,
 
           f"{self.prefix}/true_dist_mean": self.cuml_true_dist/self.num_docs, 
           f"{self.prefix}/true_dist_pert_mean": self.cuml_true_dist_pert/self.num_docs_pert, 
@@ -478,31 +573,21 @@ def validate_score_network(valid_iter, score_network, tokenizer, device, args):
     num_docs = 0
     valid_scorer_analysis = ScorerAnalysis('valid')
     score_network.eval()
-    for step, (idx, type, batch, model, sequences, distances,
-                rng_state, perturb_type) in enumerate(valid_iter):
-
-        if type == InstanceType.PERTURBED:
-            model_ = deepcopy(model)
-            inp, target = batch[:, :-1], batch[:, 1:]
-            model_with_grad, _ = ggs_utils.mle_grad(model_, inp, target, 
-                                    tokenizer.pad_token_id, args.max_grad_norm)
-
-            model, _, _, _ = ggs_utils.perturb_single(model, model_with_grad, 
-                                args.ggs_noise, noise_scale=args.noise_scale,
-                                perturb_type=perturb_type, rng_state=rng_state)
-
-        losses, pred_distances = get_train_score_network_loss(idx, 
-                                        type, model, batch, distances, sequences,
-                                        score_network, tokenizer, device, args)
+    for step, (idx, data) in enumerate(valid_iter):
+        losses, distances_and_pred_distances = \
+            get_train_score_network_loss(idx, data,
+                score_network, tokenizer, device, args)
 
         batch_loss = torch.sqrt(losses).sum().item()
+        batch_size = losses.size(0)
         if batch_loss < 0:
             continue
 
         cuml_valid_loss += batch_loss
-        num_docs += batch.size(0)
-        pred_distances = pred_distances.squeeze(1).detach()
-        valid_scorer_analysis(idx, type, batch, torch.sqrt(losses), distances, pred_distances)
+        num_docs += batch_size
+        for distances, pred_distances, type in distances_and_pred_distances:
+            pred_distances = pred_distances.squeeze(1).detach()
+            valid_scorer_analysis(idx, type, torch.sqrt(losses), distances, pred_distances)
 
         if step % 5 == 0 and step > 0:
             print('Validation:: Step: %d, Loss: %.3f'
@@ -531,56 +616,49 @@ def train_score_network(buffers, score_network, tokenizer, device,
     print('=' * 100)
     print('Start training the score network.\n')
 
-    score_network = score_network.to(device=device)
 
-    phi_optimizer = optim.AdamW(score_network.parameters(), lr=args.scorer_lr)
+    # phi_optimizer = optim.AdamW(score_network.parameters(), lr=args.scorer_lr)
+    phi_optimizer = optim.Adam(score_network.parameters(), lr=args.scorer_lr, betas=(0.9,0.98), eps=1e-6,weight_decay=0.01)
+
     # scheduler = optim.lr_scheduler.StepLR(phi_optimizer, step_size=10, gamma=0.5, verbose=True)
     # scheduler = optim.lr_scheduler.ExponentialLR(phi_optimizer, gamma=0.9)
 
     # scheduler = optim.lr_scheduler.ReduceLROnPlateau(phi_optimizer, 'min', patience=10, verbose=True)
 
-    # _, valid_iterator = buffers.get_iterators()
+    # train_iterator, valid_iterator = buffers.get_iterators_v2(args)
     # valid_loss, valid_info_dict = validate_score_network(
     #                                 valid_iterator, score_network,
     #                                 tokenizer, device, args)
-
+    # valid_loss, valid_info_dict = validate_score_network(
+    #                                 train_iterator, score_network,
+    #                                 tokenizer, device, args)
     for epoch in range(epochs):
         score_network.train()
         train_scorer_analysis = ScorerAnalysis('train')
-        train_iterator, valid_iterator = buffers.get_iterators()
+        train_iterator, valid_iterator = buffers.get_iterators_v2(args)
         cuml_train_loss = 0.
         num_docs = 0
         
         with timer_context('train_score_network_time') as ctxt_timer:
             start_time = timer()
-            for step, (idx, type, batch, model, sequences, distances,
-                         rng_state, perturb_type) in enumerate(train_iterator):
+            for step, (idx, data) in enumerate(train_iterator):
 
                 phi_optimizer.zero_grad()
-                if type == InstanceType.PERTURBED:
-                    inp, target = batch[:, :-1], batch[:, 1:]
-                    model_ = deepcopy(model)
-                    model_with_grad, _ = ggs_utils.mle_grad(model_, inp, target, 
-                                            tokenizer.pad_token_id, args.max_grad_norm)
-
-                    model, _, _, _ = ggs_utils.perturb_single(model, model_with_grad, 
-                                        args.ggs_noise, noise_scale=args.noise_scale,
-                                        perturb_type=perturb_type, rng_state=rng_state)
-        
-                losses, pred_distances = get_train_score_network_loss(idx, 
-                                                type, model, batch, distances, sequences,
-                                                score_network, tokenizer, device, args)
-
-                loss = losses.sum()/batch.size(0)
+                
+                losses, distances_and_pred_distances = \
+                    get_train_score_network_loss(idx, data,
+                        score_network, tokenizer, device, args)
+                batch_size = losses.size(0)
+                loss = losses.sum()/batch_size
 
                 if loss < 0:
                     continue
-
-                pred_distances = pred_distances.squeeze(1).detach()
-                train_scorer_analysis(idx, type, batch, torch.sqrt(losses), distances, pred_distances)
+                for distances, pred_distances, type in distances_and_pred_distances:
+                    pred_distances = pred_distances.squeeze(1).detach()
+                    train_scorer_analysis(idx, type, torch.sqrt(losses), distances, pred_distances)
 
                 cuml_train_loss += torch.sqrt(losses).sum().item()
-                num_docs += batch.size(0)
+                num_docs += batch_size
 
                 loss.backward()
                 phi_optimizer.step()
@@ -675,8 +753,10 @@ def dagger_mgs_scoring_function(score_network, model, tokenizer,
       outputs = torch.tensor([]).to(device)
       decoded = defaultdict(list)
       model.eval()
-      pad = tokenizer.pad_token_id
-      batch = batch.to(device=model.device)
+      pad = args.pad_token_id
+      
+      if not args.on_device:
+          batch = batch.to(device=model.device)
 
       batched_distances = score_network(model, batch) \
                               .detach().cpu()
@@ -773,7 +853,11 @@ def add_args(parser):
     )
 
     parser.add_argument(
-        "--scorer-lr", type=float, default=5e-4,
+        "--scorer-lr", type=float, default=1e-6,
+    )
+
+    parser.add_argument(
+        "--scorer-loss-func", type=str, default="mse",
     )
 
     parser.add_argument(

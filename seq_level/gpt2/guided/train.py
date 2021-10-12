@@ -174,7 +174,7 @@ def MGS(batch_id, batch, model, score_model, tokenizer, args, device, metrics,
         start_time = timer()
         # -- Perform update
         # global ggs_utils.MODEL_ID
-        ggs_utils.MODEL_ID = ggs_utils.update(model, update_directions, 
+        dagger_ggs_utils.MODEL_ID = ggs_utils.update(model, update_directions, 
                                     optimizer, args.max_grad_norm)
 
         end_time = timer()
@@ -220,8 +220,10 @@ def get_learning_function(score_network, step, args, total_num_batches):
 
 def train(model, tokenizer, dataset_tensor_dict, args, device):
     # global ggs_utils.MODEL_ID
-    ggs_utils.MODEL_ID = ggs_utils.get_model_id(model)
-
+    dagger_ggs_utils.MODEL_ID = ggs_utils.get_model_id(model)
+    args.pad_token_id = tokenizer.pad_token_id
+    args.eos_token_id = tokenizer.eos_token_id
+    
     score_network_training_iter = 0
     model.train()
     train_sampler = RandomSampler(dataset_tensor_dict['train'])
@@ -267,7 +269,8 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
         score_network = score_network_utils.build_score_network(
                                         input_size=config.hidden_size, 
                                         args=args)
-
+        score_network = score_network.to(device=device)
+        
         if args.initialize_score_network:
             print('=' * 100)
             initial_training_epochs = args.retrain_score_network_epochs

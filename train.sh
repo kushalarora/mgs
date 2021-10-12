@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --cpus-per-task=4
-#SBATCH --gres=gpu:16GB:1
+#SBATCH --gres=gpu:volta:1
 ##SBATCH --constraint=nvlink
 #SBATCH --mem=32G
 #SBATCH --time=96:00:00
@@ -186,7 +186,7 @@ TMP_RUN_DIR=${SLURM_TMPDIR}/${OUTPUT_DIR_SUFFIX}
 
 cmd+=" --save-base-dir ${TMP_RUN_DIR}"
 
-pkill -f "port ${TPORT}"
+pkill -f "tensorboard"
 echo "Running Command:"
 
 echo "	$cmd"
@@ -194,7 +194,7 @@ echo "	$cmd"
 echo	"####### Tensorboard on port ${TPORT} ########"
 tensorboard --logdir ${TMP_RUN_DIR} --port ${TPORT} --host localhost &
 # For Tensorboard port forwarding based on https://josephpcohen.com/w/jupyter-notebook-and-hpc-systems/.
-ssh -N -R ${TPORT}:localhost:${TPORT} login-4 &
+ssh -N -R ${TPORT}:localhost:${TPORT} login-1 &
 
 
 $cmd;

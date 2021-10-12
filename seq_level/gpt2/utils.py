@@ -154,7 +154,7 @@ def wrap_target_batch(batch, context_length):
             continue
         else:
             target_list.append(seq[context_length:])
-    if len(context_list) == 0:
+    if len(target_list) == 0:
         return torch.tensor([], dtype=torch.long)
     else:
         return torch.stack(target_list, dim=0)
@@ -263,10 +263,7 @@ def log_tensorboard(values_dict, step):
         if isinstance(v, int) or isinstance(v, float):
             logger.log_value(k, v, step)
 
-            if wandb_run is not None and step == 0:
-                wandb.summary[k] = v
-
-    if wandb_run is not None and step > 0:
+    if wandb_run is not None:
         wandb.log(values_dict)
 
 def setup_tensorboard(args):
@@ -301,10 +298,11 @@ def setup(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     n_gpu = torch.cuda.device_count()
 
-    random.seed(args.seed)
-    numpy.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.cuda.manual_seed_all(args.seed)
+    if args.seed is not None:
+        random.seed(args.seed)
+        numpy.random.seed(args.seed)
+        torch.manual_seed(args.seed)
+        torch.cuda.manual_seed_all(args.seed)
 
     logger.info("device: %s, n_gpu %d".format(str(device), n_gpu))
     logger.info("output directory: %s" % args.save_base_dir)

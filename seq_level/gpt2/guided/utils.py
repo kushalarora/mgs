@@ -14,6 +14,8 @@ from seq_level.gpt2.utils import generate_batch
 
 from enum import Enum
 
+MODEL_ID = None
+
 class PerturbationType(Enum):
     ONLY_MLE_GRAD=1
     MLE_GRAD_W_NOISE=2

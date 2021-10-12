@@ -36,11 +36,12 @@ def build_score_network(input_size, args):
         raise ValueError(f"Score Model Type: {model_type} not found!")
     
     if args.use_saved_score_network:
-            checkpoint = torch.load(args.score_network_file)
-            score_network.load_state_dict(checkpoint['model_save_dict'])
-            epochs = score_model_checkpoint['epochs']
-            logging.info(f"Loading scorer trained for {epochs} epochs" + \
-                            f" from {args.score_network_file}.")
+        checkpoint = torch.load(args.score_network_file)
+        score_network.load_state_dict(checkpoint['model_save_dict'])
+        epochs = score_model_checkpoint['epochs']
+        logging.info(f"Loading scorer trained for {epochs} epochs" + \
+                        f" from {args.score_network_file}.")
+            
     return score_network
             
 class ScoreNetworkBase(nn.Module):
@@ -50,10 +51,11 @@ class ScoreNetworkBase(nn.Module):
         self.input_size = input_size
         self.train_on_predictions = False
         self.train_on_targets = False
+        self.pad_token_id = args.pad_token_id
 
     def _get_model_output(self, model, input, target=None,
                           predictions=None, return_cls_token=True):
-        pad = model.config.pad_token_id
+        pad = self.pad_token_id
         device = input.device
         mask = input.ne(pad).float().to(device=device)
         input_ = deepcopy(input).to(device=device)
@@ -177,6 +179,8 @@ class ScoreNetworkSimpleMLPwTargetsV2(ScoreNetworkSimpleMLPwReLUResidual):
     def _get_model_output(self, model, input, targets=None,
                           predictions=None, return_cls_token=True):
         inp_emb = super()._get_model_output(model, input)
+
+        targets = utils.wrap_target_batch(targets, self.context_length)
         tgt_emb =  super()._get_model_output(model, targets)
         emb = torch.cat([inp_emb, tgt_emb], dim=-1)
         return emb
@@ -261,16 +265,16 @@ class ScoreNetworkSimpleMLPwTargetsV4(ScoreNetworkSimpleMLPwReLUResidual):
 
 def add_args(parser):
     parser.add_argument(
-        "--score-network-hidden-size", type=int, default=1024,
+        "--score-network-hidden-size", type=int, default=2048,
     )
     parser.add_argument(
         "--score-network-num-layers", type=int, default=3,
     )
     parser.add_argument(
-        "--score-network-dropout-ratio", type=float, default=0.2,
+        "--score-network-dropout-ratio", type=float, default=0.1,
     )
     parser.add_argument(
-        "--score-network-type", type=str, default="simple_mlp_complete_context",
+        "--score-network-type", type=str, default="simple_mlp_w_targets_v2",
     )
     parser.add_argument(
         "--score-network-train-on-predictions", action='store_true',
