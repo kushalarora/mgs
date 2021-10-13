@@ -211,9 +211,10 @@ class RingBuffer:
                 idx2model['non_pert'] = (model_np, sequence_np, distances_np)
 
                 idx2model['pert'] = []
+
                 for model_key_p, sequences_key_p, distances_p, rng_state, perturb_type in data['pert']:
-                    model_p = self.db[model_key_np]
-                    sequence_p = self.db[sequences_key_np]
+                    model_p = self.db[model_key_p]
+                    sequence_p = self.db[sequences_key_p]
                     model_ = deepcopy(model_p)
                     inp, target = batch[:, :-1], batch[:, 1:]
                     model_with_grad, _ = ggs_utils.mle_grad(model_, inp, target, 
