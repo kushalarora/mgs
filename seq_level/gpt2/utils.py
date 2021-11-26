@@ -53,7 +53,6 @@ class LineDataset(Dataset):
         """Group by similar lengths, then create padded batches that meet the token limit."""
         sorted_data = sorted(data, key=lambda x: -len(x))
         batches = []
-
         i = 0
         while i < len(sorted_data):
             example = sorted_data[i]
@@ -108,6 +107,7 @@ def generate_batch(model, tokenizer, batch, context_length, device, max_length, 
                 max_length=max(1, max_length),
                 min_length=min_length,
                 eos_token_ids=tokenizer.eos_token_id,
+                pad_token_id=tokenizer.eos_token_id,
                 **decoder_args
             )
             full_outputs = outputs.clone()
