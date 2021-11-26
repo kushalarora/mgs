@@ -64,6 +64,7 @@ class ScoreNetworkBase(nn.Module):
             model_output = model(input_,
                                 attention_mask=mask,
                                 output_hidden_states=True)
+            
         if return_cls_token:
             return model_output\
                     .hidden_states[-1][:, -1]
@@ -116,7 +117,8 @@ class ScoreNetworkSimpleMLP(ScoreNetworkBase):
         emb = self.input_layer(emb)
         emb = self._apply_hidden_layers(emb)
         output = self.output_layer(emb.view(-1, self.output_size))
-        return F.softplus(output)
+        return 1 + F.elu(output)
+
 
     def _apply_hidden_layers(self, emb):
         for _ in range(self.num_layers):
@@ -271,7 +273,7 @@ def add_args(parser):
         "--score-network-num-layers", type=int, default=3,
     )
     parser.add_argument(
-        "--score-network-dropout-ratio", type=float, default=0.1,
+        "--score-network-dropout-ratio", type=float, default=0.0,
     )
     parser.add_argument(
         "--score-network-type", type=str, default="simple_mlp_w_targets_v2",
