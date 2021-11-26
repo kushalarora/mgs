@@ -50,7 +50,7 @@ if [ -d ${SAVE_DIR} ]; then
 fi 
 
 
-cmd="python -u seq_level/gpt2/train.py --dataset-path=${SLURM_TMPDIR}/wikitext103_raw_gpt2bpe.pkl"
+cmd="python -u seq_level/gpt2/train.py --dataset-path=${SLURM_TMPDIR}/wikitext103_raw_gpt2bpe.pkl --chunk-size-train 10240 --chunk-size-valid 10240"
 
 if [  -n "${wandb}" ] && [ "${wandb}" == "true" ];
 then
@@ -98,11 +98,11 @@ else
 
         if [ -n "${efficient}" ] && [ "${efficient}" == "true" ]; 
         then
-            cmd+=" --efficient  --log-scoring-function  --on-device"
+            cmd+=" --efficient  --log-scoring-function "
 						if [ -n "${debug}" ] && [ "${debug}" == "true" ];
 						then
-							cmd+=' --score-network-epochs 100 --aggregated-data-size 40 --retrain-score-network-every 100 --max-buffer-size 300 --on-device --train-score-patience 100'
-							# cmd+=' --score-network-epochs 50 --aggregated-data-size 200 --retrain-score-network-every 200 --max-buffer-size 2000 --on-device'
+							cmd+=' --score-network-epochs 100 --aggregated-data-size 40 --retrain-score-network-every 100 --max-buffer-size 300 --train-score-patience 100 '
+							# cmd+=' --score-network-epochs 50 --aggregated-data-size 200 --retrain-score-network-every 200 --max-buffer-size 2000 '
 						fi
 
 						if [ -n "${init_scorer}" ] && [ "${init_scorer}" == "true" ];
@@ -182,9 +182,10 @@ else
 		exit
 	fi
 fi
-TMP_RUN_DIR=${SLURM_TMPDIR}/${OUTPUT_DIR_SUFFIX}
+# TMP_RUN_DIR=${SLURM_TMPDIR}/${OUTPUT_DIR_SUFFIX}
+TMP_RUN_DIR=${HOME}/scratch/mgs/${OUTPUT_DIR_SUFFIX}
 
-cmd+=" --save-base-dir ${TMP_RUN_DIR}"
+cmd+=" --save-base-dir ${TMP_RUN_DIR} $@"
 
 pkill -f "tensorboard"
 echo "Running Command:"
