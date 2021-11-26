@@ -182,7 +182,7 @@ def perturb_single(model, model_with_grad, noise, noise_scale,
     eps_nabla = 0
     nabla_nabla = 0
     device = model_.device
-    q = torch.tensor([0])
+    q = torch.tensor([0.]).to(device)
     with RNG(rng_state, device) as (rng, rng_state):
         for param, (name, param_with_grad) in zip(model_.parameters(), 
                                                 model_with_grad.named_parameters()):
@@ -200,7 +200,7 @@ def perturb_single(model, model_with_grad, noise, noise_scale,
             
             elif perturb_type == PerturbationType.ONLY_MLE_GRAD:
                 epsilon = g
-                noise_ = torch.tensor([0])
+                noise_ = torch.tensor([0.]).to(device)
 
             elif perturb_type == PerturbationType.MLE_GRAD_W_NOISE:
                 epsilon = g + noise_
@@ -215,8 +215,8 @@ def perturb_single(model, model_with_grad, noise, noise_scale,
             nabla_nabla += (g.view(-1) * g.view(-1)).sum()
             param.data = param.data + epsilon
 
-        q += (0.5 * torch.exp(-0.5 * eps_eps) + 
-                0.5 * torch.exp(-0.5 * eps_eps + eps_nabla - 0.5 * nabla_nabla))
+            q += (0.5 * torch.exp(-0.5 * eps_eps) + 
+                    0.5 * torch.exp(-0.5 * eps_eps + eps_nabla - 0.5 * nabla_nabla))
     return model_, torch.log(q), noise_mag, rng_state
 
 
@@ -253,8 +253,7 @@ def perturb(
                                 PerturbationType.ONLY_NOISE
 
         model_, q, noise_mag, rng_state = perturb_single(model, model_with_grad, 
-                                                         noise, noise_scale, 
-                                                         perturb_type=perturb_type)
+                                            noise, noise_scale, perturb_type=perturb_type)
 
         models.append(model_)
         log_rhos.append(q)
@@ -460,6 +459,8 @@ class RNG(object):
         return self.rng, self.rng.initial_seed()
 
     def __exit__(self, type, value, traceback):
+        if value is not None:
+            raise value
         self.rng.manual_seed(self.current_rng_state)
         return True
 
