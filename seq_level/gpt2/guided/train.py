@@ -287,7 +287,6 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
                     aggregated_data_size = min(args.aggregated_data_size, len(dataset_tensor_dict['train']))
                     aggregated_idxs = random.sample(range(len(dataset_tensor_dict['train'])), aggregated_data_size)
                     aggregated_dataset = []
-                    args.multigpu = True
                     if args.multigpu:
                         for step, idx in enumerate(aggregated_idxs):
                             aggregated_dataset.append(dataset_tensor_dict['train'][idx])
@@ -298,8 +297,8 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
                         for step, idx in enumerate(aggregated_idxs):
                             aggregated_dataset.append(dataset_tensor_dict['train'][idx])
                             batch_id, batch =dataset_tensor_dict['train'][idx]
-                            data = dagger_ggs_utils.accumulate_scorer_training_data(step, batch_id, 
-                                                batch, model, score_model, tokenizer, args, device)
+                            data = dagger_ggs_utils.accumulate_scorer_training_data(step, 
+                                        batch_id, batch, model, score_model, tokenizer, args, device)
                             
                             buffer.append(*data['non_pert'])
                             for pert_data in data['pert']:
@@ -321,8 +320,16 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
                             pickle.dump(buffer, buffer_file)
 
             logging.info("Training Scoring Network on Aggregated Data.")
-            dagger_ggs_utils.train_score_network_v3(buffer, score_network, tokenizer,
-                args, score_network_training_iter, epochs=initial_training_epochs)
+            if args.multigpu:
+                dagger_ggs_utils.train_score_network_multigpu(buffer, score_network, tokenizer,
+                                args, score_network_training_iter, epochs=initial_training_epochs)
+            else:
+                train_scorer_dataloader, valid_scorer_dataloader = \
+                                            buffer.get_dataloaders(args, device)
+                dagger_ggs_utils.train_score_network(device, score_network, tokenizer, 
+                                    train_scorer_dataloader, valid_scorer_dataloader, 
+                                    args, score_network_training_iter, epochs=initial_training_epochs)
+
 
             print('=' * 100)
     
