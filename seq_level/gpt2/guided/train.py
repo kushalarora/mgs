@@ -3,6 +3,7 @@ from copy import deepcopy
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+
 from transformers import GPT2Config
 from collections import defaultdict
 from torch.utils.data import DataLoader, RandomSampler
@@ -218,6 +219,9 @@ def get_learning_function(score_network, step, args, total_num_batches):
 
     return scoring_function, target_scoring_func, use_learned_scoring_function
 
+
+
+
 def train(model, tokenizer, dataset_tensor_dict, args, device):
     # global ggs_utils.MODEL_ID
     dagger_ggs_utils.MODEL_ID = ggs_utils.get_model_id(model)
@@ -280,21 +284,35 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
                 if not args.use_saved_aggregated_data:
                     logging.info("Started Initial Data Accumulation.")
 
-                    for step, (batch_id, batch) in enumerate(train_dataloader):
-                        if step >= args.aggregated_data_size:
-                            break
+                    aggregated_data_size = min(args.aggregated_data_size, len(dataset_tensor_dict['train']))
+                    aggregated_idxs = random.sample(range(len(dataset_tensor_dict['train'])), aggregated_data_size)
+                    aggregated_dataset = []
+                    args.multigpu = True
+                    if args.multigpu:
+                        for step, idx in enumerate(aggregated_idxs):
+                            aggregated_dataset.append(dataset_tensor_dict['train'][idx])
 
-                        dagger_ggs_utils.accumulate_scorer_training_data(step, batch_id, 
-                                batch, buffer, model,score_model, tokenizer, args, device)
+                        dagger_ggs_utils.start_scorer_training_data_accumulation(buffer, 
+                                aggregated_dataset,  model, score_model, tokenizer, args)
+                    else:
+                        for step, idx in enumerate(aggregated_idxs):
+                            aggregated_dataset.append(dataset_tensor_dict['train'][idx])
+                            batch_id, batch =dataset_tensor_dict['train'][idx]
+                            data = dagger_ggs_utils.accumulate_scorer_training_data(step, batch_id, 
+                                                batch, model, score_model, tokenizer, args, device)
+                            
+                            buffer.append(*data['non_pert'])
+                            for pert_data in data['pert']:
+                                buffer.append(*pert_data)
+
+                            scorer_acc_timer = timer_context.get_timer('scorer_data_acc_time')
+                            if step % args.print_every == 0:
+                                logging.info(f"Aggregated Batches:  {step}/{total_num_batches}. " + \
+                                            f"Avg step time: {scorer_acc_timer.avg_time():.3f}")
 
                         scorer_acc_timer = timer_context.get_timer('scorer_data_acc_time')
-                        if step % args.print_every == 0:
-                            logging.info(f"Aggregated Batches:  {step}/{total_num_batches}. " + \
-                                        f"Avg step time: {scorer_acc_timer.avg_time():.3f}")
-
-                    scorer_acc_timer = timer_context.get_timer('scorer_data_acc_time')
-                    logging.info(f"Aggregated: {len(buffer)} items in " + \
-                                f"{scorer_acc_timer.cuml_time():.3f} seconds.")
+                        logging.info(f"Aggregated: {len(buffer)} items in " + \
+                                    f"{scorer_acc_timer.cuml_time():.3f} seconds.")
 
                     if args.save_aggregated_data:
                         buffer_filepath = os.path.join(args.save_base_dir, 'buffer.pkl')
@@ -303,8 +321,8 @@ def train(model, tokenizer, dataset_tensor_dict, args, device):
                             pickle.dump(buffer, buffer_file)
 
             logging.info("Training Scoring Network on Aggregated Data.")
-            dagger_ggs_utils.train_score_network(buffer, score_network, tokenizer,
-                device, args, score_network_training_iter, epochs=initial_training_epochs)
+            dagger_ggs_utils.train_score_network_v3(buffer, score_network, tokenizer,
+                args, score_network_training_iter, epochs=initial_training_epochs)
 
             print('=' * 100)
     
@@ -478,6 +496,10 @@ def add_args(parser):
     )
     parser.add_argument(
         "--max-train-steps", type=int, default=-1
+    )
+
+    parser.add_argument(
+        "--multigpu", action='store_true',
     )
 
     parser = dagger_ggs_utils.add_args(parser)
