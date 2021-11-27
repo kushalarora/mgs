@@ -217,8 +217,10 @@ def save(model, save_base_dir):
     torch.save(model_to_save.state_dict(), output_model_file)
     model_to_save.config.to_json_file(output_config_file)
 
-    if wandb_run is not None:
+    try:
         wandb.save(os.path.join(save_base_dir, "*.pkl"))
+    except:
+        pass 
 
 def save_decodings(decodings, args):
     output_dir = os.path.join(args.save_base_dir, 'eval')
@@ -228,8 +230,10 @@ def save_decodings(decodings, args):
     print("Output directory: %s" % output_dir)
     pickle.dump(decodings, open(os.path.join(output_dir, 'decodings.pkl'), 'wb'))
 
-    if wandb_run is not None:
+    try:
         wandb.save(os.path.join(output_dir, "*.pkl"))
+    except:
+        pass 
 
 def save_metrics(metrics, args):
     output_dir = os.path.join(args.save_base_dir, 'eval')
@@ -262,9 +266,10 @@ def log_tensorboard(values_dict, step):
     for k, v in values_dict.items():
         if isinstance(v, int) or isinstance(v, float):
             logger.log_value(k, v, step)
-
-    if wandb_run is not None:
+    try:
         wandb.log(values_dict)
+    except:
+        pass
 
 def setup_tensorboard(args):
     log_directory = args.save_base_dir
@@ -277,13 +282,13 @@ def setup_tensorboard(args):
         pass
     
     if args.wandb:
-        global wandb_run
-        wandb_run = wandb.init(project=args.wandb_project_name,
-                                dir=args.save_base_dir,
-                                name=args.wandb_run_name,
-                                entity='dagger_mgs',
-                                tags=args.wandb_tags,
-                                config=args)
+        wandb.init(project=args.wandb_project_name,
+                    dir=args.save_base_dir,
+                    name=args.wandb_run_name,
+                    entity='dagger_mgs',
+                    tags=args.wandb_tags,
+                    group="multigpu" if args.multigpu else None,
+                    config=args)
 
 def setup(args):
     args.save_base_dir = _expr_dir(args)

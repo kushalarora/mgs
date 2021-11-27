@@ -353,56 +353,57 @@ class ScorerAnalysis:
         self.reset()
 
     def __call__(self, idx, type, true_dist, pred_dist):
-        losses = (((true_dist - pred_dist)**2)**0.5)
-        batch_size = losses.size(0)
-        self.cuml_loss += losses.sum().item()
-
-        self.true_dist += true_dist.tolist()
-        self.pred_dist += pred_dist.tolist()
-        self.loss_list += losses.tolist()
-
-        scorer_fit = (torch.abs((true_dist - pred_dist)/true_dist))\
-                        .sum().item()
-        
-        self.cuml_scorer_fit_all += scorer_fit
+        batch_size = true_dist.size(0)
         self.num_docs += batch_size
 
+        l2dist = (((true_dist - pred_dist)**2)**0.5)
+        self.cuml_l2dist += l2dist.sum().item()
+
+        self.true_dists += true_dist.tolist()
+        self.pred_dists += pred_dist.tolist()
+        self.l2dists += l2dist.tolist()
+
+        scorer_fit = torch.abs((true_dist - pred_dist)/true_dist)\
+                            .sum().item()
+        
+        self.cuml_scorer_fit_all += scorer_fit
+
         if idx not in self.scorer_diff_fit_dict:
-            self.scorer_diff_fit_dict[idx] = {
-                                   'non_pert': None, 
-                                   'perturbed': [],
-                                }
+            self.scorer_diff_fit_dict[idx] = \
+                {'non_pert': None, 'perturbed': [],}
         
         self.cuml_pred_dist += pred_dist.sum().item()
         self.cuml_true_dist += true_dist.sum().item()
         if type == InstanceType.PERTURBED:
             self.num_docs_pert += batch_size
-            self.cuml_pert_loss += losses.sum().item()
-            self.true_dist_pert += true_dist.tolist()
-            self.pred_dist_pert += pred_dist.tolist()
-            self.loss_list_pert += losses.tolist()
             self.cuml_scorer_fit_pert += scorer_fit
-            self.scorer_diff_fit_dict[idx]['perturbed'].append((true_dist.sum(), 
-                                                                pred_dist.sum()))
+            self.cuml_pert_l2dist += l2dist.sum().item()
             self.cuml_pred_dist_pert += pred_dist.sum().item()
             self.cuml_true_dist_pert += true_dist.sum().item()
+
+            self.true_dist_pert += true_dist.tolist()
+            self.pred_dist_pert += pred_dist.tolist()
+            self.l2dists_pert += l2dist.tolist()
+            self.scorer_diff_fit_dict[idx]['perturbed'].append((true_dist, 
+                                                                pred_dist))
         else:
             self.num_docs_non_pert += batch_size
-            self.cuml_non_pert_loss += losses.sum().item()
-            self.true_dist_non_pert += true_dist.tolist()
-            self.pred_dist_non_pert += pred_dist.tolist()
-            self.loss_list_non_pert += losses.tolist()
             self.cuml_scorer_fit_non_pert += scorer_fit
-            self.scorer_diff_fit_dict[idx]['non_pert'] = (true_dist.sum(), 
-                                                          pred_dist.sum())
+            self.cuml_non_pert_l2dist += l2dist.sum().item()
             self.cuml_pred_dist_non_pert += pred_dist.sum().item()
             self.cuml_true_dist_non_pert += true_dist.sum().item()
 
+            self.true_dist_non_pert += true_dist.tolist()
+            self.pred_dist_non_pert += pred_dist.tolist()
+            self.l2dists_non_pert += l2dist.tolist()
+            self.scorer_diff_fit_dict[idx]['non_pert'] = (true_dist, 
+                                                          pred_dist)
+
     def reset(self):
         self.scorer_diff_fit_dict = {}
-        self.cuml_loss = 0.
-        self.cuml_pert_loss = 0.
-        self.cuml_non_pert_loss = 0.
+        self.cuml_l2dist = 0.
+        self.cuml_pert_l2dist = 0.
+        self.cuml_non_pert_l2dist = 0.
 
         self.cuml_scorer_fit_all = 0.
         self.cuml_scorer_fit_pert = 0.
@@ -412,16 +413,16 @@ class ScorerAnalysis:
         self.num_docs_pert = 1
         self.num_docs_non_pert = 1
 
-        self.loss_list = []
-        self.true_dist = []
-        self.pred_dist = []
+        self.l2dists = []
+        self.true_dists = []
+        self.pred_dists = []
 
         self.true_dist_pert = []
         self.true_dist_non_pert = []
         self.pred_dist_pert = []
         self.pred_dist_non_pert = []
-        self.loss_list_pert = []
-        self.loss_list_non_pert = []
+        self.l2dists_pert = []
+        self.l2dists_non_pert = []
 
         self.disagreements = 0.
         self.mean_disagreement = 0.
@@ -441,61 +442,58 @@ class ScorerAnalysis:
 
             pertured_scores = diff_dict['perturbed']
             for perturb_true_score, perturb_pred_score in pertured_scores:
-                if (perturb_true_score - non_pert_true_score) == 0:
+                pred_diff = perturb_pred_score - non_pert_pred_score
+                true_diff = perturb_true_score - non_pert_true_score
+
+                if torch.any(true_diff == 0):
+                    perturb_true_score_list = str(perturb_true_score.tolist())
+                    non_pert_true_score_list = str(non_pert_true_score.tolist())
                     logging.debug(f"For idx: {idx}," + 
-                        f" perturbed score: {perturb_true_score:.3f}" + 
-                        f" non_pert score: {non_pert_true_score:.3f}" + 
+                        f" perturbed score: {perturb_true_score_list}" + 
+                        f" non_pert score: {non_pert_true_score_list}" + 
                          " are equal.")
                     continue
 
-                pred_diff = perturb_pred_score - non_pert_pred_score
-                true_diff = perturb_true_score - non_pert_true_score
-                self.disagreements += (pred_diff/true_diff < 0).item()
-                self.mean_disagreement += torch.abs((pred_diff - true_diff)/true_diff).item()
+                self.disagreements += (pred_diff/true_diff < 0).sum().item()
+                self.mean_disagreement += torch.abs((pred_diff - true_diff)/true_diff).sum().item()
                 self.disagreement_count += 1
 
-        bins = np.array([0, 0.125, 0.25, 0.5, 1, 2, 3, 4] + list(range(10, 110, 10)))
-        idxs = np.digitize(np.array(self.loss_list), bins)
-        loss_digitized = bins[idxs - 1]
-
-        idxs = np.digitize(np.array(self.loss_list_pert), bins)
-        loss_pert_digitized =  bins[idxs - 1]
-
-        idxs = np.digitize(np.array(self.loss_list_non_pert), bins)
-        loss_non_pert_digitized =  bins[idxs - 1]
-
+        
+        l2dists = np.array(self.l2dists)
+        l2dists_pert = np.array(self.l2dists_pert)
+        l2dists_non_pert = np.array(self.l2dists_non_pert)
         return {
-          f"{self.prefix}/corr_all": kendalltau(self.true_dist, self.pred_dist)[0],
+          f"{self.prefix}/corr_all": kendalltau(self.true_dists, self.pred_dists)[0],
           f"{self.prefix}/corr_pert": kendalltau(self.true_dist_pert, self.pred_dist_pert)[0],
           f"{self.prefix}/corr_non_pert": kendalltau(self.true_dist_non_pert,
                                                      self.pred_dist_non_pert)[0],
 
-          f"{self.prefix}/loss_mean": self.cuml_loss / self.num_docs,
-          f"{self.prefix}/loss_mean_pert": self.cuml_pert_loss / self.num_docs_pert,
-          f"{self.prefix}/loss_mean_non_pert": self.cuml_non_pert_loss / self.num_docs_non_pert, 
+          f"{self.prefix}/l2dist_mean": self.cuml_l2dist / self.num_docs,
+          f"{self.prefix}/loss_mean_pert": self.cuml_pert_l2dist / self.num_docs_pert,
+          f"{self.prefix}/loss_mean_non_pert": self.cuml_non_pert_l2dist / self.num_docs_non_pert, 
 
-          f"{self.prefix}/loss_u1": np.mean(loss_digitized < 1) ,
-          f"{self.prefix}/loss_pert_u1": np.mean(loss_pert_digitized < 1),
-          f"{self.prefix}/loss_non_pert_u1": np.mean(loss_non_pert_digitized < 1),
+          f"{self.prefix}/loss_u1": np.mean(l2dists < 1) ,
+          f"{self.prefix}/loss_pert_u1": np.mean(l2dists_pert < 1),
+          f"{self.prefix}/loss_non_pert_u1": np.mean(l2dists_non_pert < 1),
 
-          f"{self.prefix}/loss_u10": np.mean(loss_digitized < 10) ,
-          f"{self.prefix}/loss_pert_u10": np.mean(loss_pert_digitized < 10),
-          f"{self.prefix}/loss_non_pert_u10": np.mean(loss_non_pert_digitized < 10), 
+          f"{self.prefix}/loss_u10": np.mean(l2dists < 10) ,
+          f"{self.prefix}/loss_pert_u10": np.mean(l2dists_pert < 10),
+          f"{self.prefix}/loss_non_pert_u10": np.mean(l2dists_non_pert < 10), 
 
-          f"{self.prefix}/loss_u20": np.mean(loss_digitized < 20) ,
-          f"{self.prefix}/loss_pert_u20": np.mean(loss_pert_digitized < 20),
-          f"{self.prefix}/loss_non_pert_u20": np.mean(loss_non_pert_digitized < 20), 
+          f"{self.prefix}/loss_u20": np.mean(l2dists < 20) ,
+          f"{self.prefix}/loss_pert_u20": np.mean(l2dists_pert < 20),
+          f"{self.prefix}/loss_non_pert_u20": np.mean(l2dists_non_pert < 20), 
 
-          f"{self.prefix}/loss_u30": np.mean(loss_digitized < 30) ,
-          f"{self.prefix}/loss_pert_u30": np.mean(loss_pert_digitized < 30),
-          f"{self.prefix}/loss_non_pert_u30": np.mean(loss_non_pert_digitized < 30), 
+          f"{self.prefix}/loss_u30": np.mean(l2dists < 30) ,
+          f"{self.prefix}/loss_pert_u30": np.mean(l2dists_pert < 30),
+          f"{self.prefix}/loss_non_pert_u30": np.mean(l2dists_non_pert < 30), 
 
           f"{self.prefix}/scorer_fit_all": self.cuml_scorer_fit_all / self.num_docs,
           f"{self.prefix}/scorer_fit_pert": self.cuml_scorer_fit_pert / self.num_docs_pert,
           f"{self.prefix}/scorer_fit_non_pert": self.cuml_scorer_fit_non_pert / self.num_docs_non_pert,
 
-          f"{self.prefix}/disagreements": self.disagreements / self.disagreement_count,
-          f"{self.prefix}/mean_disagreements": self.mean_disagreement / self.disagreement_count,
+          f"{self.prefix}/disagreements": self.disagreements / self.num_docs,
+          f"{self.prefix}/mean_disagreements": self.mean_disagreement / self.num_docs,
 
           f"{self.prefix}/true_dist_mean": self.cuml_true_dist/self.num_docs, 
           f"{self.prefix}/true_dist_pert_mean": self.cuml_true_dist_pert/self.num_docs_pert, 
@@ -574,8 +572,6 @@ def start_scorer_training_data_accumulation(buffer, dataset, model, score_model,
         processes.append(p)
         p.start()
 
-
-
     while True:
         try:
             data = queue.get(timeout=100)
@@ -591,14 +587,13 @@ def start_scorer_training_data_accumulation(buffer, dataset, model, score_model,
 def accumulate_scorer_training_data_v2(device, dataset, model, score_model, tokenizer, args, queue, world_size=1):
     if args.multigpu:
         multigpu_setup(device, world_size)
-    
+
     train_dataloader = get_dataloader(args, dataset, device, world_size, batch_size=1)
     train_dataloader.sampler.set_epoch(0)
 
     model = model.to(device)
     score_model = score_model.to(device)
-    # model = DDP(model, device_ids=[device], 
-                # output_device=device, find_unused_parameters=False)
+
     total_num_batches = len(train_dataloader)
     for step, (batch_id, batch) in enumerate(train_dataloader):
         accumulate_scorer_training_data(step, batch_id[0], batch[0], model, 
@@ -733,7 +728,7 @@ def get_train_score_network_loss(data,
 def validate_score_network(valid_iter, score_network, tokenizer, device, args):
     cuml_valid_loss = 0.
     num_docs = 1
-    if device == 0:
+    if args.multigpu or device == 0:
         valid_scorer_analysis = ScorerAnalysis('valid')
     score_network.eval()
     for step, data in enumerate(valid_iter):
@@ -748,7 +743,7 @@ def validate_score_network(valid_iter, score_network, tokenizer, device, args):
 
         cuml_valid_loss += batch_loss
         num_docs += batch_size
-        if device == 0:
+        if args.multigpu or device == 0:
             for distances, pred_distances, _, type in distances_and_pred_distances:
                 pred_distances = pred_distances.squeeze(1).detach()
                 valid_scorer_analysis(data['idx'], type, distances, pred_distances)
@@ -759,7 +754,7 @@ def validate_score_network(valid_iter, score_network, tokenizer, device, args):
     score_network.train()
 
     valid_info_dict = None 
-    if device == 0:
+    if args.multigpu or device == 0:
         valid_info_dict = valid_scorer_analysis.get_metrics()
 
     return cuml_valid_loss/num_docs, valid_info_dict
@@ -768,21 +763,29 @@ def validate_score_network(valid_iter, score_network, tokenizer, device, args):
 def train_score_network_multigpu(buffers, score_network, tokenizer, 
             args, train_score_network_iteration=0, epochs=100, world_size=1):
     world_size = torch.cuda.device_count()
-    
-    args.multigpu = True        
+    ctx = mp.get_context('spawn')
+    queue = ctx.Queue(10000)
     processes = []
     for rank in range(world_size):
         p = mp.Process(target=train_score_network_helper_v3, 
-                args=(rank, buffers, score_network, tokenizer, 
-                        args, train_score_network_iteration, epochs, world_size))
+                args=(rank, buffers, score_network, tokenizer,  args,
+                    train_score_network_iteration, epochs, world_size, queue))
         processes.append(p)
         p.start()
+
+    while True:
+        try:
+            data = queue.get(timeout=100)
+            utils.log_tensorboard(*data)
+            del data
+        except Exception:
+            break
 
     for p in processes:
         p.join()
 
 def train_score_network_helper_v3(device, buffers, score_network, tokenizer, 
-            args, train_score_network_iteration=0, epochs=100, world_size=1):
+    args, train_score_network_iteration=0, epochs=100, world_size=1, queue=None):
     if args.multigpu:
         multigpu_setup(device, world_size)
 
@@ -793,11 +796,11 @@ def train_score_network_helper_v3(device, buffers, score_network, tokenizer,
             
     train_score_network(device, score_network, tokenizer, 
                         train_dataloader, valid_dataloader, args, 
-                        train_score_network_iteration, epochs=epochs)
+                        train_score_network_iteration, epochs=epochs, queue=queue)
     cleanup()
 
 def train_score_network(device, score_network, tokenizer, train_dataloader, valid_dataloader, 
-                args, train_score_network_iteration=0, epochs=100):
+                args, train_score_network_iteration=0, epochs=100, queue=None):
     """ This method takes in the scoring data (B) and learns a parameterized scoring model (S) to 
         mimic the original cost function (C) by minimizing the L2 loss.
         $C$ is defined as
@@ -811,16 +814,16 @@ def train_score_network(device, score_network, tokenizer, train_dataloader, vali
     best_score_network = None
     patience_counter = 0
 
-    if device == 0:
+    if not args.multigpu or device == 0:
         print('=' * 100)
         print('Start training the score network.\n')
 
-    phi_optimizer = AdamW(score_network.parameters(), lr=args.scorer_lr)
-    scheduler = ReduceLROnPlateau(phi_optimizer, 'min', patience=10, verbose=True)
+    phi_optimizer = Adam(score_network.parameters(), lr=args.scorer_lr)
+    scheduler = ReduceLROnPlateau(phi_optimizer, 'min', patience=3, verbose=True)
 
     for epoch in range(epochs):
         score_network.train()
-        if device == 0:
+        if not args.multigpu or device == 0:
             train_scorer_analysis = ScorerAnalysis('train')
         cuml_train_loss = 0.
         num_docs = 1
@@ -840,7 +843,7 @@ def train_score_network(device, score_network, tokenizer, train_dataloader, vali
                 if loss < 0:
                     continue
                 
-                if device == 0:
+                if not args.multigpu or device == 0:
                     for distances, pred_distances, _, type in distances_and_pred_distances:
                         pred_distances = pred_distances.squeeze(1).detach()
                         train_scorer_analysis(data['idx'], type, distances, pred_distances)
@@ -851,13 +854,13 @@ def train_score_network(device, score_network, tokenizer, train_dataloader, vali
                 loss.backward()
                 phi_optimizer.step()
 
-                if device == 0 and step % 5 == 0 and step > 0:
+                if (not args.multigpu or device == 0) and step % 5 == 0 and step > 0:
                     print('Training:: Epoch: %3d :: Step: %5d, Loss: %6.3f' % (epoch, step, cuml_train_loss / num_docs),
                         end='\r')
 
             print()
             end_time = timer()
-            if device == 0:
+            if not args.multigpu or device == 0:
                 train_info_dict = train_scorer_analysis.get_metrics()
                 print(pformat(train_info_dict))
 
@@ -876,11 +879,48 @@ def train_score_network(device, score_network, tokenizer, train_dataloader, vali
                 min_valid_loss = valid_loss
                 best_score_network = deepcopy(score_network)
 
+                if (not args.multigpu or device == 0) and args.save_score_network:
+                    score_network_filepath = os.path.join(args.save_base_dir,
+                                                f'score_network_epoch_{epoch}.pkl')
+                    print(f"Saving score network for epoch {epoch}::{score_network_filepath}")
+                    torch.save({
+                        'model_save_dict': score_network.state_dict(),
+                        'epochs': epoch,
+                        'dataset_size': len(train_dataloader),
+                    }, score_network_filepath)
+
+            if not args.multigpu or device == 0:
+                print(pformat(valid_info_dict))
+                print('Epoch: %d :: Train Loss: %.3f, ' % (epoch, train_loss) +
+                            'Best Valid Loss: %.3f, Valid Loss: %.3f, Epochs Since Last Best: %d '
+                            % (min_valid_loss, valid_loss, patience_counter))
+                print(f"Train score network epoch {epoch} done!")
+                print(f"Avg Epoch Time: " +
+                    f"Train: {timer_context('train_score_network_time').avg_time():.3f} " +
+                    f"Valid: {timer_context('validate_score_network_time').avg_time():.3f}.")
+
+                prefix = f"tsn-{train_score_network_iteration}/"
+                valid_metrics = {
+                    prefix + "train_loss": train_loss,
+                    prefix + "valid_loss": valid_loss,
+                    prefix + "min_valid_loss": min_valid_loss,
+                    prefix + "epochs_since_best": patience_counter,
+                    prefix + "current_epoch": epoch,
+                }
+
+                for key, val in valid_info_dict.items():
+                    valid_metrics[prefix + key] = val
+
+                for key, val in train_info_dict.items():
+                    valid_metrics[prefix + key] = val
+
+                if args.multigpu and queue is not None:
+                    queue.put((valid_metrics, epoch))
+                else:
+                    utils.log_tensorboard(valid_metrics, epoch)
+
             scheduler.step(valid_loss)
             # scheduler.step()
-
-            if device == 0:
-                print(pformat(valid_info_dict))
 
             if patience_counter > args.train_score_patience:
                 print(f"Stopping Early at epoch: {epoch} with best validation loss: {min_valid_loss}")
@@ -889,34 +929,7 @@ def train_score_network(device, score_network, tokenizer, train_dataloader, vali
             end_time = timer()
             ctxt_timer.timeit(start_time, end_time)
 
-        if device == 0:
-            print('Epoch: %d :: Train Loss: %.3f, ' % (epoch, train_loss) +
-                        'Best Valid Loss: %.3f, Valid Loss: %.3f, Epochs Since Last Best: %d '
-                        % (min_valid_loss, valid_loss, patience_counter))
-            print(f"Train score network epoch {epoch} done!")
-            print(f"Avg Epoch Time: " +
-                        f"Train: {timer_context('train_score_network_time').avg_time():.3f} " +
-                        f"Valid: {timer_context('validate_score_network_time').avg_time():.3f}.")
-
-        # prefix = f"tsn-{train_score_network_iteration}/"
-        # valid_metrics = {
-        #     prefix + "train_loss": train_loss,
-        #     prefix + "valid_loss": valid_loss,
-        #     prefix + "min_valid_loss": min_valid_loss,
-        #     prefix + "epochs_since_best": patience_counter,
-        #     prefix + "current_epoch": epoch,
-        # }
-
-        # for key, val in valid_info_dict.items():
-        #     valid_metrics[prefix + key] = val
-
-        # for key, val in train_info_dict.items():
-        #     valid_metrics[prefix + key] = val
-
-        # utils.log_tensorboard(valid_metrics, epoch)
-
-    if device == 0:
-
+    if not args.multigpu or device == 0:
         print('Done training the score network.\n')
         print('=' * 100)
         score_network = best_score_network
@@ -995,7 +1008,7 @@ def add_args(parser):
     )
 
     parser.add_argument(
-        "--score-network-epochs", type=int, default=100,
+        "--score-network-epochs", type=int, default=20,
     )
     parser.add_argument(
         "--retrain-score-network-epochs", type=int, default=30,
@@ -1046,7 +1059,7 @@ def add_args(parser):
     )
 
     parser.add_argument(
-        "--scorer-lr", type=float, default=1e-5,
+        "--scorer-lr", type=float, default=1e-4,
     )
 
     parser.add_argument(
