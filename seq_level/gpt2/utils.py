@@ -268,8 +268,9 @@ def log_tensorboard(values_dict, step):
             logger.log_value(k, v, step)
     try:
         wandb.log(values_dict)
-    except:
-        pass
+    except Exception as e:
+        print("Warning:: Failed to send data to WANDB.")
+        print(e)
 
 def setup_tensorboard(args):
     log_directory = args.save_base_dir

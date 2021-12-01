@@ -410,7 +410,7 @@ def compute_weight(distance, perturbed_distances, log_rhos, beta):
             beta * (distance - perturbed_distance)
                 for perturbed_distance in perturbed_distances])\
             .clamp(max=1e16)
-    ws = ws - log_rhos
+    ws = ws - log_rhos.squeeze(1)
     log_ws = torch.log_softmax(ws, 0)
     return log_ws
 
