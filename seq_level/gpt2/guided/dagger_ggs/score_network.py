@@ -1,6 +1,9 @@
+from copy import deepcopy
+
 import torch.nn as nn
 import torch.nn.functional as F
-from copy import deepcopy
+import logging
+
 import torch
 
 import seq_level.gpt2.utils as utils
@@ -38,7 +41,7 @@ def build_score_network(input_size, args):
     if args.use_saved_score_network:
         checkpoint = torch.load(args.score_network_file)
         score_network.load_state_dict(checkpoint['model_save_dict'])
-        epochs = score_model_checkpoint['epochs']
+        epochs = checkpoint['epochs']
         logging.info(f"Loading scorer trained for {epochs} epochs" + \
                         f" from {args.score_network_file}.")
             
@@ -112,12 +115,14 @@ class ScoreNetworkSimpleMLP(ScoreNetworkBase):
         inp, targets = batch[:, :-1], batch[:, 1:]
 
         input = self._get_input(batch, predictions)
-        emb = self._get_model_output(model, input, targets=inp, 
+        emb = self._get_model_output(model, input, targets=targets, 
                                         predictions=predictions)
+        
         emb = self.input_layer(emb)
         emb = self._apply_hidden_layers(emb)
         output = self.output_layer(emb.view(-1, self.output_size))
-        return 1 + F.elu(output)
+        scores = 1 + F.elu(output)
+        return scores.squeeze(1)
 
 
     def _apply_hidden_layers(self, emb):
