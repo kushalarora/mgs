@@ -118,3 +118,6 @@ gpt2/*
 *.out
 wandb/
 results/
+seq_level/mgs_fairseq/data/
+*/tb/default/*
+lightning_logs/*
