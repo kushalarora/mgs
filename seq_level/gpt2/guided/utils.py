@@ -82,6 +82,90 @@ def task_distance(
     return distance
 
 
+def task_distance_v2(
+        target_trim, model_trim, outputs, batch, score_model,
+        kind='edit',
+        eos_id=None,
+        average=True,
+):
+    distance = 0
+    if kind == 'edit':
+        edits = []
+        for actual_, predicted_ in zip(target_trim, model_trim):
+            edit_dist = editdistance.eval(actual_, predicted_)
+            edit_dist = min(edit_dist / len(actual_), 1)
+
+            edits.append(edit_dist)
+        if average:
+            distance += sum(edits) / len(edits)
+        else:
+            distance += torch.tensor(edits, device=outputs.device, dtype=torch.float)
+
+    if kind == 'nonterm' or kind == 'all':
+        diffs = []
+        for actual_, predicted_ in zip(target_trim, model_trim):
+            if eos_id not in predicted_ and eos_id in actual_:
+                diffs.append(1.0)
+            else:
+                diffs.append(0.0)
+        if average:
+            distance += sum(diffs) / len(diffs)
+        else:
+            distance += torch.tensor(diffs, device=outputs.device, dtype=torch.float)
+
+    if kind == 'repeat-4' or kind == 'all':
+        distances = []
+        for actual_, predicted_ in zip(target_trim, model_trim):
+            if len(predicted_) < 4 or len(actual_) < 4:
+                distances.append(1.0)
+            else:
+                ngs = [ng for ng in ngrams(predicted_, 4)]
+                predicted_counter = Counter(ngs)
+                predicted_total_repeatition = (max(len(ngs), 1)/len(predicted_counter) - 1) 
+
+                ngs = [ng for ng in ngrams(actual_, 4)]
+                actual_counter = Counter(ngs)
+                actual_total_repeatition = (max(len(ngs), 1)/len(actual_counter) - 1)
+                
+                distances.append(predicted_total_repeatition - actual_total_repeatition)
+
+        if average:
+            distance += np.mean(distances)
+        else:
+            distance += torch.tensor(distances, device=outputs.device, dtype=torch.float)
+
+    if kind == 'lm':
+        score_model.eval()
+        all_distances = []
+        with torch.no_grad():
+            for logits in [batch, outputs]:
+                # Compute log probs using the score model
+                log_probs = torch.log_softmax(score_model(logits)[0], -1)
+                log_probs = log_probs[:, :-1, :].gather(2, logits[:, 1:].unsqueeze(-1)).squeeze(-1)
+
+                sequence_mask = (logits[:, 1:].eq(eos_id).cumsum(1).cumsum(1) <= 1).float()
+                # Compute distance
+                distances = -(log_probs * sequence_mask).mean(1)
+                all_distances.append(distances)
+            distances = torch.abs(all_distances[0] - all_distances[1])
+            if average:
+                distance += distances.mean().item()
+            else:
+                distance += distances
+
+    if kind == 'len_diff' or kind == 'all':
+        diffs = []
+        for pred, target in zip(model_trim, target_trim):
+            diff = np.abs(len(pred) - len(target))
+            diff = diff / max(len(pred), len(target))
+            diffs.append(diff)
+        if average:
+            distance += sum(diffs) / len(diffs)
+        else:
+            distance += torch.tensor(diffs, device=outputs.device, dtype=torch.float)
+    return distance
+
+
 def max_length(target, eos_token_id, args):
     target_ = target.tolist()[0]  # longest sequence in the batch
     if eos_token_id in target_[args.context_length:]:
@@ -189,8 +273,10 @@ def perturb_single(model, model_with_grad, noise, noise_scale,
             g = -param_with_grad.grad.data
 
             if noise_scale == 'uniform':
-                noise_ = noise * torch.randn(param.size(), generator=rng, device=device) * \
-                                 (g.abs().sum() / g.numel())
+                rand = torch.randn(param.size(), generator=rng, device=device)
+                rand /= rand.norm()
+                noise_ = noise * rand * \
+                            (g.abs().sum() / g.numel())
             else:
                 noise_ = noise * torch.randn(param.size(), generator=rng, device=device)
 
@@ -215,8 +301,9 @@ def perturb_single(model, model_with_grad, noise, noise_scale,
             nabla_nabla += (g.view(-1) * g.view(-1)).sum()
             param.data = param.data + epsilon
 
-            q += (0.5 * torch.exp(-0.5 * eps_eps) + 
-                    0.5 * torch.exp(-0.5 * eps_eps + eps_nabla - 0.5 * nabla_nabla))
+    # 0.5 * N(x|0, I) + 0.5 * N(x|\grad_{MLE}, I)
+    q = (0.5 * torch.exp(-0.5 * eps_eps) + 
+         0.5 * torch.exp(-0.5 * eps_eps + eps_nabla - 0.5 * nabla_nabla)) 
     return model_, torch.log(q), noise_mag, rng_state
 
 
@@ -410,9 +497,19 @@ def compute_weight(distance, perturbed_distances, log_rhos, beta):
             beta * (distance - perturbed_distance)
                 for perturbed_distance in perturbed_distances])\
             .clamp(max=1e16)
-    ws = ws - log_rhos.squeeze(1)
+    ws = ws - log_rhos
     log_ws = torch.log_softmax(ws, 0)
     return log_ws
+
+def compute_weight_v2(distance, perturbed_distances, log_rhos, beta):
+    ws = beta * torch.tensor([distance] + perturbed_distances)
+    # ws = torch.tensor([
+    #         beta * (distance - perturbed_distance)
+    #             for perturbed_distance in perturbed_distances])\
+    #         .clamp(max=1e16)
+    ws[1:] = ws[1:] - log_rhos
+    log_ws = torch.log_softmax(-1 * ws, 0)
+    return log_ws[1:]
 
 
 def get_model_id(model):

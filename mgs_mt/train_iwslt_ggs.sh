@@ -1,7 +1,8 @@
 # NOTE: this is an example command, the experiments in the paper were done with `run_slurm.py`
 #!/usr/bin/env bash
 
-CUDA_VISIBLE_DEVICES=0 fairseq-train --data /data/wslt14.tokenized.de-en \
+fairseq-train data-bin/iwslt14.tokenized.de-en \
+    --user-dir ./ggs/ \
     --no-epoch-checkpoints \
     --arch transformer_iwslt_de_en \
     --share-decoder-input-output-embed \
@@ -12,7 +13,7 @@ CUDA_VISIBLE_DEVICES=0 fairseq-train --data /data/wslt14.tokenized.de-en \
     --dropout 0.3 --weight-decay 0.0001    \
     --criterion label_smoothed_cross_entropy \
     --label-smoothing 0.1     \
-    --max-tokens 4096     \
+    --max-tokens 12288     \
     --eval-bleu     \
     --eval-bleu-args '{"beam": 5, "max_len_a": 1.2, "max_len_b": 10}'     \
     --eval-bleu-detok moses    \
@@ -27,5 +28,6 @@ CUDA_VISIBLE_DEVICES=0 fairseq-train --data /data/wslt14.tokenized.de-en \
     --ggs-metric sentence_bleu \
     --ggs-num-samples 4 \
     --noise-scaling uniform-global \
-    --update-freq 1
+    --update-freq 1 \
+    $@
 

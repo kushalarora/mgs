@@ -14,6 +14,7 @@
 # conda activate torch181
 
 
+ulimit -c unlimited
 . ./run_config.sh
 
 get_random_port() {
@@ -50,7 +51,7 @@ if [ -d ${SAVE_DIR} ]; then
 fi 
 
 
-cmd="python -u seq_level/gpt2/train.py --dataset-path=${SLURM_TMPDIR}/wikitext103_raw_gpt2bpe.pkl --chunk-size-train 10240 --chunk-size-valid 10240"
+cmd="python -u seq_level/gpt2/train.py --dataset-path=${SLURM_TMPDIR}/wikitext103_raw_gpt2bpe.pkl --chunk-size-train 8192 --chunk-size-valid 8192"
 
 if [  -n "${wandb}" ] && [ "${wandb}" == "true" ];
 then

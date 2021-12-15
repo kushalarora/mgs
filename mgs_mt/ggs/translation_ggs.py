@@ -1,18 +1,19 @@
 from fairseq.tasks.translation import TranslationTask
 from fairseq import metrics
 import logging
-from copy import deepcopy
+from copy import deepcopy, copy
 import torch
 
-from fairseq import bleu, utils
+from fairseq import utils
+from fairseq.scoring import bleu
 from fairseq.tasks import register_task
-import fairseq.ggs.utils as ggs_utils
-from fairseq.ggs.sequence_generator import SequenceGenerator
-from fairseq.ggs.metrics import GuidedMetrics
+import ggs.utils as ggs_utils
+from ggs.sequence_generator import SequenceGenerator
+from ggs.metrics import GuidedMetrics
 import numpy as np
-from sacrebleu import TOKENIZERS
+# from sacrebleu import TOKENIZERS
 
-DEFAULT_TOKENIZER = '13a'
+# DEFAULT_TOKENIZER = '13a'
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +76,8 @@ class TranslationGGSTask(TranslationTask):
         )
         # fmt: on
 
-    def __init__(self, args, src_dict, tgt_dict):
-        super().__init__(args, src_dict, tgt_dict)
+    def __init__(self, cfg, src_dict, tgt_dict):
+        super().__init__(cfg, src_dict, tgt_dict)
         self.custom_metrics = {
             'train': GuidedMetrics('train'),
             'valid': GuidedMetrics('valid')
@@ -88,48 +89,55 @@ class TranslationGGSTask(TranslationTask):
     ):
         model.train()
         model.set_num_updates(update_num)
-        args = self.args
+        # self.cfg = self.args
+        cfg = self.cfg
         # -- Decode with the current model (required for computing the `weights`)
         decodings_curr = self.decode(model, sample)
-        distance_curr = self.distance(decodings_curr, self.tgt_dict.eos(), self.args.ggs_metric)
+        distance_curr = self.distance(decodings_curr, self.tgt_dict.eos(), self.cfg.ggs_metric)
 
         # -- Obtain MLE gradients
-        model_with_grad = deepcopy(model)
+        model_with_grad = self._copy_model(model)
         model_with_grad.zero_grad()
         loss, sample_size, logging_output = criterion(model_with_grad, sample)
         loss_ = loss / sample_size
         loss_.backward()
-        if args.max_grad_norm > 0:
-            torch.nn.utils.clip_grad_norm_(model_with_grad.parameters(), args.max_grad_norm)
+        if cfg.max_grad_norm > 0:
+            torch.nn.utils.clip_grad_norm_(model_with_grad.parameters(), cfg.max_grad_norm)
 
         # -- Perturb with noise centered at MLE gradients
-        perturb = ggs_utils.perturb_mixture
-        perturbed_models, log_rhos = perturb(
-            model, model_with_grad, args.ggs_num_samples, args.ggs_noise,
-            args.no_mle, args.keep_grad, args.keep_zero,
-            noise_scaling=args.noise_scaling,
-            last_layer_only=args.last_layer_only
-        )
+        perturbed_models = []
+        log_rhos = []
+        for i in range(cfg.ggs_num_samples):
+            model_ = self._copy_model(model)
+            perturbed_model, log_rho  = ggs_utils.perturb(
+                i, model_, model_with_grad, cfg.ggs_noise,
+                cfg.no_mle, cfg.keep_grad, cfg.keep_zero,
+                noise_scaling=cfg.noise_scaling,
+                last_layer_only=cfg.last_layer_only
+            )
+            perturbed_models.append(perturbed_model)
+            log_rhos.append(log_rho)
+        log_rhos = torch.stack(log_rhos).cpu()
 
         # -- Decode with perturbed models and compute task metric
         distances = []
         for p_model in perturbed_models:
             decodings = self.decode(p_model, sample)
-            distance = self.distance(decodings, self.tgt_dict.eos(), self.args.ggs_metric)
+            distance = self.distance(decodings, self.tgt_dict.eos(), self.cfg.ggs_metric)
             distances.append(distance)
 
         # -- Compute weights
-        log_weights = ggs_utils.compute_weight(distance_curr, distances, log_rhos, args.ggs_beta)
+        log_weights = ggs_utils.compute_weight(distance_curr, distances, log_rhos, cfg.ggs_beta)
         # -- Compute weighted average of the directions
         update_directions = ggs_utils.parameter_weighted_average(
-            model, perturbed_models, log_rhos, log_weights, args.use_argmax
+            model, perturbed_models, log_rhos, log_weights, cfg.use_argmax
         )
 
         # -- Set update directions
-        ggs_utils.set_update(model, update_directions, optimizer, args.max_grad_norm, sample_size)
+        ggs_utils.set_update(model, update_directions, optimizer, cfg.max_grad_norm, sample_size)
 
         # -- Periodically compute custom metrics
-        if self._step % self.args.custom_metrics_interval == 0:
+        if self._step % self.cfg.custom_metrics_interval == 0:
             self.custom_metrics['train'].step(
                 distance_curr, decodings_curr['preds'], decodings_curr['targets'],
                 self.tgt_dict.pad(), self.tgt_dict.eos(),
@@ -139,11 +147,20 @@ class TranslationGGSTask(TranslationTask):
 
         return loss, sample_size, logging_output
 
+    def _copy_model(self, model):
+        from fairseq.distributed import ModuleProxyWrapper
+        model_ = model
+        if type(model) == ModuleProxyWrapper:
+            model_ = model.module.module
+        
+        copied_model = deepcopy(model_)
+        return copied_model
+
     def decode(self, model, sample):
-        max_length = int(self.args.decode_len_multiplier*sample['target'].size(1))
+        max_length = int(self.cfg.decode_len_multiplier*sample['target'].size(1))
         model.eval()
         with torch.no_grad():
-            if self.args.train_decoder == 'greedy':
+            if self.cfg.train_decoder == 'greedy':
                 generator = SequenceGenerator(
                     self.tgt_dict,
                     bos_token=self.tgt_dict.eos(),  # fairseq beam search uses eos as bos
@@ -152,7 +169,7 @@ class TranslationGGSTask(TranslationTask):
                 )
                 preds = generator.greedy(model, sample)
             else:
-                generator = self.build_generator([model], self.args)
+                generator = self.build_generator([model], self.cfg)
                 out = generator(sample)
                 preds = [o[0]['tokens'].tolist() for o in out]
 
@@ -164,11 +181,12 @@ class TranslationGGSTask(TranslationTask):
         def tokenize(toks, escape_unk=False):
             s = self.tgt_dict.string(
                 toks.int().cpu(),
-                self.args.eval_bleu_remove_bpe,
+                self.cfg.eval_bleu_remove_bpe,
                 escape_unk=escape_unk,
             )
             s = self.tokenizer.decode(s)
-            tokens = TOKENIZERS[DEFAULT_TOKENIZER](s.rstrip()).split()
+            tokens = s.rstrip().split()
+            # tokens = TOKENIZERS[DEFAULT_TOKENIZER](s.rstrip()).split()
             return tokens
 
         for i in range(len(preds_trim)):
@@ -191,7 +209,7 @@ class TranslationGGSTask(TranslationTask):
             decodings['preds'], decodings['targets'],
             kind=metric,
             eos_id=eos,
-            bleu_smoothing=self.args.bleu_smoothing
+            bleu_smoothing=self.cfg.bleu_smoothing
         )
 
     def valid_step(self, sample, model, criterion):
@@ -217,3 +235,4 @@ class TranslationGGSTask(TranslationTask):
         metrics.log_scalar('sentence_bleu', sum_logs('sentence_bleu'), round=4)
         metrics.log_scalar('meteor', sum_logs('meteor'), round=4)
         metrics.log_scalar('edit', sum_logs('edit'), round=4)
+ 

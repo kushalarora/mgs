@@ -28,11 +28,6 @@ def task_distance(preds_trim, targets_trim, kind='edit', eos_id=None, bleu_smoot
         target_trim_ = [[x] for x in targets_trim]
         bleu = corpus_bleu(target_trim_, preds_trim, smoothing_function=smoothingf)
         distance = 1 - bleu
-    elif kind == 'bleu':
-        smoothingf = getattr(SmoothingFunction(), bleu_smoothing)
-        target_trim_ = [[x] for x in targets_trim]
-        bleu = corpus_bleu(target_trim_, preds_trim, smoothing_function=smoothingf)
-        distance = 1 - bleu
     elif kind == 'len_diff':
         diffs = []
         for pred, target in zip(preds_trim, targets_trim):

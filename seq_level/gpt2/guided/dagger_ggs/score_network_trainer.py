@@ -19,7 +19,7 @@ from pytorch_lightning.plugins import DDPPlugin, DDPSpawnPlugin
 
 
 from torch.optim import Adadelta, Adam, AdamW
-from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR
+from torch.optim.lr_scheduler import ReduceLROnPlateau, StepLR, OneCycleLR
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import Dataset, DataLoader
 
@@ -29,8 +29,7 @@ import torch.nn.functional as F
 import seq_level.gpt2.guided.dagger_ggs.score_network as score_network
 
 from seq_level.gpt2.guided.dagger_ggs.ggs_efficient_utils import (InstanceType, 
-                                                                  get_dataloader, 
-                                                                 )
+        get_dataloader)
 import seq_level.gpt2.guided.utils as ggs_utils
 
 
@@ -230,7 +229,6 @@ class ScoreNetworkDataModule(LightningDataModule):
       world_size = torch.cuda.device_count()
       for idx, (k,v) in enumerate(self.buffer.db.items()):
           self.buffer.db[k] = v.to(f'cuda:{idx % world_size}')
-      pass
 
     def setup(self, stage: Optional[str] = None):
       self.train_data = ScoringNetworkTrainingDataset(self.buffer, 
@@ -246,7 +244,7 @@ class ScoreNetworkDataModule(LightningDataModule):
         return DataLoader(self.val_data, batch_size=1, 
                 collate_fn=lambda x: x[0], num_workers=0, pin_memory=True)
 
-        
+
 
     def transfer_batch_to_device(self, data, device, dataloader_idx):
         idx2model = {}
@@ -290,7 +288,7 @@ class ScoreNetworkDataModule(LightningDataModule):
                 not perturb_type != ggs_utils.PerturbationType.MLE_GRAD_W_NOISE:
                     continue
 
-            model_p, log_rho_, noise_mag_, rng_ = ggs_utils.perturb_single(model, 
+            model_p, log_rho_, noise_mag_, _ = ggs_utils.perturb_single(model, 
                 model_with_grad, self.args.ggs_noise, noise_scale=self.args.noise_scale,
                                 perturb_type=perturb_type, rng_state=rng_state)
 
@@ -351,8 +349,10 @@ class ScoreNetworkTrainingModule(LightningModule):
             pred_distances = pred_distances.detach()
             self.train_scorer_analysis(data['idx'], type, 
                             distances, pred_distances)
-        return {'loss': batch_loss.mean(), 
-                'dists_and_preds': dists_and_preds}
+        self.log("loss", batch_loss.mean(), batch_size=1, prog_bar=True, on_step=True, on_epoch=True)
+        # return {'loss': batch_loss.mean(), 
+        #         'dists_and_preds': dists_and_preds}
+        return batch_loss.mean()
 
     def validation_step(self, data, batch_idx):
         dists_and_preds = self.forward(data)
@@ -364,29 +364,37 @@ class ScoreNetworkTrainingModule(LightningModule):
             pred_distances = pred_distances.detach()
             self.valid_scorer_analysis(data['idx'], type, 
                                 distances, pred_distances)
-        self.log("loss", batch_loss.mean())
-        return {'loss': batch_loss.mean(), 
+        self.log("val_loss", batch_loss.mean(), batch_size=1, prog_bar=True, on_epoch=True)
+        return {'val_loss': batch_loss.mean(), 
                 'dists_and_preds': dists_and_preds}
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.score_network.parameters(), lr=self.args.scorer_lr)
-        return [optimizer], [StepLR(optimizer, step_size=1, gamma=0.5)]
-
+        optimizer = torch.optim.Adam(self.score_network.parameters(), 
+                        lr=self.args.scorer_lr, 
+                        weight_decay=0.1,
+                        betas=(0.9,0.98))
+        return ([optimizer], 
+                # [OneCycleLR(optimizer, max_lr=1e-3, steps_per_epoch=5000, epochs=100, verbose=True)])
+                [StepLR(optimizer, step_size=3, gamma=0.5, verbose=True)])
+    
     def train_epoch_end(self, outputs):
+        loss = np.mean([x['loss'].item() for x in outputs])
         train_info_dict = self.train_scorer_analysis.get_metrics()
+        train_info_dict['train/loss'] = loss
         if self.global_rank == 0:
             print()
-            print(pformat(train_info_dict))
-        self.log_dict(train_info_dict)
+            logging.info(pformat(train_info_dict))
+        self.log_dict(train_info_dict, rank_zero_only=True, batch_size=1, on_epoch=True)
 
     def validation_epoch_end(self, outputs):
-        val_loss = np.mean([x['loss'].item() for x in outputs])
+        val_loss = np.mean([x['val_loss'].item() for x in outputs])
         valid_info_dict = self.valid_scorer_analysis.get_metrics()
-        valid_info_dict['loss'] = val_loss
+        valid_info_dict['valid/loss'] = val_loss
+
         if self.global_rank == 0:
             print()
-            print(pformat(valid_info_dict))
-        self.log_dict(valid_info_dict)
+            logging.info(pformat(valid_info_dict))
+        self.log_dict(valid_info_dict, rank_zero_only=True, batch_size=1, on_epoch=True)
 
     def get_loss(self, data, loss_func_type='mse', ggs_beta=1.0):
         loss = 0.
@@ -394,20 +402,20 @@ class ScoreNetworkTrainingModule(LightningModule):
             for (dist, pred_dist, _, _) in data:
                 loss += F.mse_loss(
                             pred_dist,
-                            dist.view(-1, 1),
+                            dist,
                             reduction='none',)
             loss /= len(data)
         elif loss_func_type == 'mse-diff':
             non_perturb_data = data[0]
             assert InstanceType.NON_PERTURBED == non_perturb_data[-1]
 
-            a = (non_perturb_data[0].view(-1, 1) - non_perturb_data[1])**2
+            a = (non_perturb_data[0] - non_perturb_data[1])**2
             loss += a
             for perturb_data in  data[1:]:
                 assert InstanceType.PERTURBED == perturb_data[-1]
-                b = (perturb_data[0].view(-1, 1) - perturb_data[1])**2
+                b = (perturb_data[0] - perturb_data[1])**2
                 loss += b
-                loss += ((perturb_data[0] - non_perturb_data[0]).view(-1, 1) - (perturb_data[1] - non_perturb_data[1]))**2
+                loss += ((perturb_data[0] - non_perturb_data[0]) - (perturb_data[1] - non_perturb_data[1]))**2
                 loss /= 3
             loss /= len(data[1:])
         elif loss_func_type == 'kl' or loss_func_type == 'tv':
@@ -445,14 +453,24 @@ class ScoreNetworkTrainingModule(LightningModule):
         return loss
 
 def train_score_network_lightning(buffer, score_network, tokenizer, 
-            args, train_score_network_iteration=0, epochs=100,):
+            args, train_score_network_iteration=0, epochs=100, loggers=[]):
+    torch.multiprocessing.set_sharing_strategy('file_system')
+    # mp.set_start_method('spawn')
     datamodule = ScoreNetworkDataModule(args, buffer)
     model = ScoreNetworkTrainingModule(args, score_network)
+    strategy = None
+    if args.multigpu: 
+        strategy = DDPSpawnPlugin(find_unused_parameters=False)
     trainer = Trainer(
-                gpus=-1 if args.multigpu else 1, 
-                strategy=DDPSpawnPlugin(find_unused_parameters=False),
+                # auto_lr_find=True,
+                # overfit_batches=0.3,
+                gpus=-1 if args.multigpu else 1,
+                default_root_dir=args.save_base_dir,
+                strategy=strategy,
                 max_epochs=epochs,
-                num_sanity_val_steps=0)
+                num_sanity_val_steps=0, 
+                # callbacks=RichProgressBar(),
+                logger=loggers)
 
     trainer.fit(model=model, 
                 datamodule=datamodule)
@@ -720,7 +738,7 @@ def add_args(parser):
         "--train-score-patience", type=int, default=30,
     )
     parser.add_argument(
-        "--scorer-lr", type=float, default=1e-4,
+        "--scorer-lr", type=float, default=5e-6,
     )
 
     parser.add_argument(

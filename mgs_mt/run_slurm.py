@@ -10,10 +10,10 @@ import random
 
 user_folders = {
     'output-dirname': {
-        'user': '/path',
+        'arorakus': '/home/mila/a/arorakus/scratch/mgs_mt',
     },
     'base-dir': {
-        'user': '/path',
+        'arorakus': '/home/mila/a/arorakus/wdir/mgs/mgs_mt',
     }
 }
 
@@ -35,8 +35,7 @@ eval_mode = False # set this to True when want to skip save-base-dir
 
 
 DEFAULT_COMMON_SETTINGS = {
-    'script': os.path.join(user_folders['base-dir'][current_user], 'train.py'),
-    '--data': '/data/iwslt14.tokenized.de-en',
+    'script': "fairseq-train data-bin/iwslt14.tokenized.de-en",
     '--no-epoch-checkpoints': None,
     '--arch': 'transformer_iwslt_de_en',
     '--share-decoder-input-output-embed': None,
@@ -59,6 +58,7 @@ DEFAULT_COMMON_SETTINGS = {
     '--no-progress-bar': None,
     '--patience': '-1',
     '--log-format': 'simple',
+    '--ddp-backend': 'legacy_ddp',
 }
 
 name_fields = []
@@ -84,10 +84,10 @@ if False:
 
 
 # -- GGS tune
-if False:
+if True:
     GRID = True
     common_settings = DEFAULT_GGS_SETTINGS
-    common_settings['--restore-file'] = '/iwslt_mle/checkpoint_best.pt'
+    common_settings['--restore-file'] = 'iwslt_mle/checkpoint_best.pt'
     common_settings['--clip-norm'] = '1.0'
 
     common_settings['--reset-optimizer'] = None
@@ -100,13 +100,14 @@ if False:
     common_settings['--lr'] = '6.25e-5'
     common_settings['--update-freq'] = '4'
     common_settings['--max-tokens'] = '16384'
+    common_settings['--user-dir'] = 'ggs'
 
     grids = [
         {
             '--ggs-num-samples': ['4'],
-            '--ggs-metric': ['sentence_bleu', 'edit', 'meteor'],
-            '--ggs-beta': ['1.0', '10.0', '100.0'],
-            '--ggs-noise': ['0.01', '0.1', '1.0'],
+            '--ggs-metric': ['sentence_bleu'],
+            '--ggs-beta': ['100.0'],
+            '--ggs-noise': ['1.0'],
             '--noise-scaling': ['uniform-global']
         },
     ]
@@ -206,7 +207,7 @@ for job in jobs:
 
     # Make the python command
     script = common_settings.get('script', job.get('script'))
-    cmd = ['python', '-u', script]
+    cmd = [script]
 
     for arg, val in common_settings.items():
         if isinstance(val, list):
@@ -258,7 +259,7 @@ for job in jobs:
         slurmfile.write("#SBATCH --time=%d:00:00\n" % args.nhrs)
         slurmfile.write("#SBATCH --mem=50G\n")
         slurmfile.write("#SBATCH --gres=gpu:%d\n" % args.ngpus)
-        slurmfile.write("#SBATCH --partition=p40_4,p100_4,v100_sxm2_4")
+        # slurmfile.write("#SBATCH --partition=p40_4,p100_4,v100_sxm2_4")
         slurmfile.write("#SBATCH -c %d\n" % args.ncpus)
         slurmfile.write('#SBATCH --signal=USR1@60\n')
         slurmfile.write('term_handler () {\n\

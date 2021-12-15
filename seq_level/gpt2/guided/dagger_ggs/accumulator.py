@@ -29,14 +29,13 @@ def multigpu_setup(rank, world_size):
 
 
 def start_scorer_training_data_accumulation(buffer, dataset, model, score_model, tokenizer, args):
-    torch.multiprocessing.set_sharing_strategy('file_system')
+    # torch.multiprocessing.set_sharing_strategy('file_system')
     mp.set_start_method('spawn')
-    m = mp.Manager()
 
     world_size = torch.cuda.device_count()
     ctx = mp.get_context('spawn')
 
-    queue = ctx.Queue(10000)
+    queue = ctx.Queue(100000)
     event = ctx.Event()
     processes = []
     for rank in range(world_size):
@@ -55,17 +54,19 @@ def start_scorer_training_data_accumulation(buffer, dataset, model, score_model,
     is_done = [False] * world_size
     while not np.all(is_done):
         try:
-            # print()
-            data = queue.get(timeout=10)
+            data = queue.get(block=True)
+            print(f"Queue Size: {queue.qsize()}")
             if len(data) == 2:
                 is_done[data[0]] = True
             else:
                 buffer.append(*data)
                 del data
         except Exception as e:
+            print()
             print("Error Queue:" + str(e))
-            if queue.empty():
-                break
+            print("Sleeping for 100")
+            time.sleep(100)
+
         
     print("Setting Event")
     event.set()
@@ -74,7 +75,7 @@ def start_scorer_training_data_accumulation(buffer, dataset, model, score_model,
     # ctxt.join(timeout=100)
     for idx, p in enumerate(processes):
         print(f"Waiting for Process: {idx}")
-        p.join()
+        p.join(timeout=1000)
         print(f"Joined Process: {idx}")
 
 
