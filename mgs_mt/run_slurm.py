@@ -59,6 +59,9 @@ DEFAULT_COMMON_SETTINGS = {
     '--patience': '-1',
     '--log-format': 'simple',
     '--ddp-backend': 'legacy_ddp',
+    '--no-progress-bar': None,
+    '--log-format': 'simple',
+    '--log-interval': '10',
 }
 
 name_fields = []
@@ -93,13 +96,13 @@ if True:
     common_settings['--reset-optimizer'] = None
     common_settings['--reset-meters'] = None
     common_settings['--reset-lr-scheduler'] = None
-    common_settings['--max-tokens'] = '16384'
+    common_settings['--max-tokens'] = '4096'
     common_settings['--lr-scheduler'] = 'fixed'
     common_settings['--lr-shrink'] = '0.9'
     common_settings['--warmup-updates'] = '0'
     common_settings['--lr'] = '6.25e-5'
     common_settings['--update-freq'] = '4'
-    common_settings['--max-tokens'] = '16384'
+    common_settings['--max-tokens'] = '4096'
     common_settings['--user-dir'] = 'ggs'
 
     grids = [

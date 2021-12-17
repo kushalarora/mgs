@@ -8,12 +8,13 @@ fairseq-train data-bin/iwslt14.tokenized.de-en \
     --share-decoder-input-output-embed \
     --clip-norm 1.0 \
     --optimizer adam \
-    --lr-scheduler fixed \
+    --lr 5e-4 \
+    --lr-scheduler inverse_sqrt \
     --warmup-updates 4000     \
     --dropout 0.3 --weight-decay 0.0001    \
     --criterion label_smoothed_cross_entropy \
     --label-smoothing 0.1     \
-    --max-tokens 12288     \
+    --max-tokens 4096     \
     --eval-bleu     \
     --eval-bleu-args '{"beam": 5, "max_len_a": 1.2, "max_len_b": 10}'     \
     --eval-bleu-detok moses    \
@@ -29,5 +30,7 @@ fairseq-train data-bin/iwslt14.tokenized.de-en \
     --ggs-num-samples 4 \
     --noise-scaling uniform-global \
     --update-freq 1 \
+    --ddp-backend legacy_ddp \
+    --save-dir checkpoints_ggs_scratch \
     $@
 
