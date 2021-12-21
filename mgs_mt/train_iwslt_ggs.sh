@@ -1,7 +1,7 @@
 # NOTE: this is an example command, the experiments in the paper were done with `run_slurm.py`
 #!/usr/bin/env bash
 
-fairseq-train data-bin/iwslt14.tokenized.de-en \
+fairseq-train /home/mila/a/arorakus/scratch/mgs_mt/data-bin/iwslt14.tokenized.de-en \
     --user-dir ./ggs/ \
     --no-epoch-checkpoints \
     --arch transformer_iwslt_de_en \
@@ -31,6 +31,6 @@ fairseq-train data-bin/iwslt14.tokenized.de-en \
     --noise-scaling uniform-global \
     --update-freq 1 \
     --ddp-backend legacy_ddp \
-    --save-dir checkpoints_ggs_scratch \
+    --save-dir /home/mila/a/arorakus/scratch/mgs_mt/checkpoints_ggs_scratch/${SLURM_JOB_ID} \
     $@
 
