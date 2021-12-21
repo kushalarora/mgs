@@ -74,6 +74,9 @@ class TranslationGGSTask(TranslationTask):
         parser.add_argument(
             "--mixture", type=int, choices=[0, 1], default=1,
         )
+        parser.add_argument(
+            "--print-interval", type=int, default=10,
+        )
         # fmt: on
 
     def __init__(self, cfg, src_dict, tgt_dict):
@@ -94,6 +97,11 @@ class TranslationGGSTask(TranslationTask):
         # -- Decode with the current model (required for computing the `weights`)
         decodings_curr = self.decode(model, sample)
         distance_curr = self.distance(decodings_curr, self.tgt_dict.eos(), self.cfg.ggs_metric)
+
+        if self._step % cfg.print_interval == 0:
+            logging.info(f"\nTarget   : {' '.join(decodings_curr['targets'][0])}\n" + 
+                f"Orig.    : {' '.join(decodings_curr['preds'][0])}\n" + 
+                f"Cost: {distance_curr}")
 
         # -- Obtain MLE gradients
         model_with_grad = self._copy_model(model)
@@ -121,9 +129,14 @@ class TranslationGGSTask(TranslationTask):
 
         # -- Decode with perturbed models and compute task metric
         distances = []
-        for p_model in perturbed_models:
+        for i, p_model in enumerate(perturbed_models):
             decodings = self.decode(p_model, sample)
             distance = self.distance(decodings, self.tgt_dict.eos(), self.cfg.ggs_metric)
+            if self._step % cfg.print_interval == 0:
+                logging.info(f"\n" + 
+                    f"Pret. ({i}): {' '.join(decodings['preds'][0])}\n" + 
+                    f"Pret. Cost {i}: {distance}")
+
             distances.append(distance)
 
         # -- Compute weights
@@ -144,6 +157,9 @@ class TranslationGGSTask(TranslationTask):
                 model_with_grad, update_directions, log_rhos, log_weights
             )
         self._step += 1
+
+        logging_output[self.cfg.ggs_metric] = 1 - distance_curr
+        logging_output["nbatch"] = 1
 
         return loss, sample_size, logging_output
 
@@ -232,7 +248,9 @@ class TranslationGGSTask(TranslationTask):
 
         def sum_logs(key):
             return sum(log.get(key, 0) for log in logging_outputs)
-        metrics.log_scalar('sentence_bleu', sum_logs('sentence_bleu'), round=4)
-        metrics.log_scalar('meteor', sum_logs('meteor'), round=4)
-        metrics.log_scalar('edit', sum_logs('edit'), round=4)
+        nbatch = sum_logs('nbatch')
+
+        metrics.log_scalar('sentence_bleu', sum_logs('sentence_bleu')/nbatch, nbatch, round=4)
+        metrics.log_scalar('meteor', sum_logs('meteor')/nbatch, nbatch, round=4)
+        metrics.log_scalar('edit', sum_logs('edit')/nbatch, nbatch, round=4)
  

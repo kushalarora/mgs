@@ -25,6 +25,10 @@ parser.add_argument('--ngpus', type=int, default=1)
 parser.add_argument('--ncpus', type=int, default=4)
 parser.add_argument('--dryrun', action='store_true')
 parser.add_argument('--print-commands', action='store_true')
+parser.add_argument('--ggs-scratch', action='store_true')
+parser.add_argument('--mle', action='store_true')
+parser.add_argument('--ggs-finetune', action='store_true')
+
 args = parser.parse_args()
 
 # Global extras
@@ -35,7 +39,7 @@ eval_mode = False # set this to True when want to skip save-base-dir
 
 
 DEFAULT_COMMON_SETTINGS = {
-    'script': "fairseq-train data-bin/iwslt14.tokenized.de-en",
+    'script': "fairseq-train /home/mila/a/arorakus/scratch/mgs_mt/data-bin/iwslt14.tokenized.de-en",
     '--no-epoch-checkpoints': None,
     '--arch': 'transformer_iwslt_de_en',
     '--share-decoder-input-output-embed': None,
@@ -62,6 +66,7 @@ DEFAULT_COMMON_SETTINGS = {
     '--no-progress-bar': None,
     '--log-format': 'simple',
     '--log-interval': '10',
+    '--print-interval': '100',
 }
 
 name_fields = []
@@ -75,7 +80,7 @@ for k, v in DEFAULT_COMMON_SETTINGS.items():
         DEFAULT_GGS_SETTINGS[k] = v
 
 # -- MLE pretrain / baseline
-if False:
+if args.mle:
     GRID = True
     common_settings = DEFAULT_COMMON_SETTINGS
     grids = [
@@ -87,10 +92,10 @@ if False:
 
 
 # -- GGS tune
-if True:
+if args.ggs_finetune:
     GRID = True
     common_settings = DEFAULT_GGS_SETTINGS
-    common_settings['--restore-file'] = 'iwslt_mle/checkpoint_best.pt'
+    common_settings['--restore-file'] = '/home/mila/a/arorakus/scratch/mgs_mt/iwslt_mle/checkpoint_best.pt'
     common_settings['--clip-norm'] = '1.0'
 
     common_settings['--reset-optimizer'] = None
@@ -109,16 +114,17 @@ if True:
         {
             '--ggs-num-samples': ['4'],
             '--ggs-metric': ['sentence_bleu'],
-            '--ggs-beta': ['100.0'],
-            '--ggs-noise': ['1.0'],
-            '--noise-scaling': ['uniform-global']
+            '--ggs-beta': ['1.0'],
+            '--ggs-noise': ['3.0'],
+            '--noise-scaling': ['uniform-global'],
+            # '--noise-scaling': ['grad'],
         },
     ]
     expr = 'iwslt_ggs_tune'
 
 
 # -- GGS from scratch
-if False:
+if args.ggs_scratch:
     GRID = True
     common_settings = DEFAULT_GGS_SETTINGS
     common_settings['--clip-norm'] = '1.0'

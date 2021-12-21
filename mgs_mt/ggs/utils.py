@@ -189,12 +189,13 @@ def parameter_weighted_average(model, perturbed_models, log_rhos, log_weights, u
         if use_argmax:
             i = np.argmax(log_weights)
             epsilon = (perturbed_models[i].state_dict()[name] - param).data
-            averaged = torch.exp(log_rhos[i]) * epsilon
+            averaged = torch.exp(log_weights[i]) * epsilon
         else:
             for i, model_ in enumerate(perturbed_models):
                 
                 epsilon = (model_.state_dict()[name] - param).data
-                epsilon = torch.exp(log_rhos[i] + log_weights[i]) * epsilon
+                # epsilon = torch.exp(log_rhos[i] + log_weights[i]) * epsilon
+                epsilon = torch.exp(log_weights[i]) * epsilon
                 epsilons.append(epsilon)
             averaged = torch.stack(epsilons, 0).sum(0)
         update_directions[name] = averaged.data
