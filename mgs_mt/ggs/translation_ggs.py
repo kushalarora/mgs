@@ -231,16 +231,16 @@ class TranslationGGSTask(TranslationTask):
     def valid_step(self, sample, model, criterion):
         loss, sample_size, logging_output = super().valid_step(sample, model, criterion)
         decodings = self.decode(model, sample)
-        logging_output['sentence_bleu'] = self.distance(
+        logging_output['nbatch'] = 1
+        logging_output['sentence_bleu'] = 1- self.distance(
             decodings, self.tgt_dict.eos(), 'sentence_bleu'
         )
-        logging_output['meteor'] = self.distance(
+        logging_output['meteor'] = 1 - self.distance(
             decodings, self.tgt_dict.eos(), 'meteor'
         )
-        logging_output['edit'] = self.distance(
+        logging_output['edit'] = 1 - self.distance(
             decodings, self.tgt_dict.eos(), 'edit'
         )
-
         return loss, sample_size, logging_output
 
     def reduce_metrics(self, logging_outputs, criterion):

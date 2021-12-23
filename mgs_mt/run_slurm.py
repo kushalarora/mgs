@@ -47,13 +47,14 @@ DEFAULT_COMMON_SETTINGS = {
     '--clip-norm': '1.0',
     '--lr': '5e-4',
     '--lr-scheduler': 'inverse_sqrt',
-    '--warmup-updates': '4000',
+    '--warmup-updates': '800',
     '--dropout': '0.3',
     '--weight-decay': '0.0001',
     '--criterion': 'label_smoothed_cross_entropy',
     '--label-smoothing': '0.1',
-    '--max-tokens': '4096',
+    '--max-tokens': '12288',
     '--eval-bleu': None,
+    '--eval-bleu-args': '\'{"beam": 5, "max_len_a": 1.2, "max_len_b": 10}\'',
     '--eval-bleu-detok moses': None,
     '--eval-bleu-remove-bpe': None,
     '--eval-bleu-print-samples': None,
@@ -67,6 +68,7 @@ DEFAULT_COMMON_SETTINGS = {
     '--log-format': 'simple',
     '--log-interval': '10',
     '--print-interval': '100',
+    '--user-dir': 'ggs',
 }
 
 name_fields = []
@@ -101,22 +103,21 @@ if args.ggs_finetune:
     common_settings['--reset-optimizer'] = None
     common_settings['--reset-meters'] = None
     common_settings['--reset-lr-scheduler'] = None
-    common_settings['--max-tokens'] = '4096'
+    common_settings['--max-tokens'] = '16000'
     common_settings['--lr-scheduler'] = 'fixed'
     common_settings['--lr-shrink'] = '0.9'
     common_settings['--warmup-updates'] = '0'
-    common_settings['--lr'] = '6.25e-5'
+    # common_settings['--lr'] = '6.25e-5'
     common_settings['--update-freq'] = '4'
-    common_settings['--max-tokens'] = '4096'
     common_settings['--user-dir'] = 'ggs'
 
     grids = [
         {
             '--ggs-num-samples': ['4'],
             '--ggs-metric': ['sentence_bleu'],
-            '--ggs-beta': ['1.0'],
-            '--ggs-noise': ['3.0'],
-            '--noise-scaling': ['uniform-global'],
+            '--ggs-beta': ['100.0'],
+            '--ggs-noise': ['1.0'],
+            # '--noise-scaling': ['uniform-global'],
             # '--noise-scaling': ['grad'],
         },
     ]
@@ -128,16 +129,16 @@ if args.ggs_scratch:
     GRID = True
     common_settings = DEFAULT_GGS_SETTINGS
     common_settings['--clip-norm'] = '1.0'
-    common_settings['--max-tokens'] = '4096'
+    common_settings['--max-tokens'] = '12288'
     common_settings['--update-freq'] = '1'
 
     grids = [
         {
             '--ggs-num-samples': ['4'],
-            '--noise-scaling': ['uniform-global'],
+            '--noise-scaling': ['uniform'],
             '--ggs-metric': ['sentence_bleu'],
-            '--ggs-noise': ['1.0', '0.1', '0.01'],
-            '--ggs-beta': ['1.0', '10.0', '100.0'],
+            '--ggs-noise': ['1.0'],
+            '--ggs-beta': ['1.0'],
         },
     ]
     expr = 'iwslt_ggs_fromscratch'
@@ -263,14 +264,16 @@ for job in jobs:
         slurmfile.write("#SBATCH --job-name" + "=" + name + "\n")
         slurmfile.write("#SBATCH --open-mode=append\n")
         slurmfile.write("#SBATCH --output=%s.out\n" % (os.path.join(output_dir, name)))
-        slurmfile.write("#SBATCH --error=%s.err\n" % (os.path.join(output_dir, name)))
+        slurmfile.write("#SBATCH --error=%s.out\n" % (os.path.join(output_dir, name)))
         slurmfile.write("#SBATCH --export=ALL\n")
         slurmfile.write("#SBATCH --time=%d:00:00\n" % args.nhrs)
-        slurmfile.write("#SBATCH --mem=50G\n")
+        slurmfile.write("#SBATCH --mem=240G\n")
+        slurmfile.write("#SBATCH --ntasks=%d\n" % args.ngpus)
         slurmfile.write("#SBATCH --gres=gpu:%d\n" % args.ngpus)
         # slurmfile.write("#SBATCH --partition=p40_4,p100_4,v100_sxm2_4")
         slurmfile.write("#SBATCH -c %d\n" % args.ncpus)
-        slurmfile.write('#SBATCH --signal=USR1@60\n')
+        # slurmfile.write('#SBATCH --signal=USR1@60\n')
+        slurmfile.write("source ~/envs/fairseq/bin/activate\n")
         slurmfile.write('term_handler () {\n\
     # catch and ignore TERM. we get multiple terms during shutdown, so best\n\
     # to just do nothing\n\
@@ -291,7 +294,7 @@ for job in jobs:
         slurmfile.write("trap 'usr1_handler' USR1\n")
         slurmfile.write("trap 'term_handler' TERM\n")
         slurmfile.write("cd " + user_folders['base-dir'][current_user] + '\n')
-        slurmfile.write("srun " + cmd)
+        slurmfile.write(cmd)
         slurmfile.write("\n")
 
     if not args.dryrun:
